@@ -44,7 +44,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-27-cr-dr-word-and-day-month-date"
+BUILD_TAG = "2026-08-27-pending-marker-not-always-stop"
 
 # "amount" is new here vs the supplier parser - a single signed column
 # instead of separate debit/credit. "id" here means whatever reference
@@ -428,6 +428,7 @@ def parse_words_strategy(pdf):
     rows, warnings = [], []
     anchors = None
     seen_pending = False
+    seen_pending_marker = False
     emitted_opening = [False]  # list-wrapped so the inner per-line block can mutate it
     emitted_closing = [False]
     for page_no, page in enumerate(pdf.pages, start=1):
@@ -465,8 +466,32 @@ def parse_words_strategy(pdf):
             raw_low = raw.lower()
 
             if PENDING_SECTION_RE.search(raw_low):
-                seen_pending = True
-                break
+                # Some banks use this purely as a section header with a
+                # SEPARATE table format after it that never has a real
+                # balance column (seen for real: April's Pending
+                # Transactions section - Date/Description/Merchant
+                # Name/Amount, no balance at all, nothing real ever
+                # followed it). Others use it as a mid-statement marker
+                # with real, normally-structured transactions continuing
+                # right after (seen for real: an August statement where
+                # dated transactions with a real, continuing Realtime
+                # Balance carried on for several more days past this
+                # exact line). Don't assume which case this is from the
+                # marker text alone - skip just this line and the
+                # "Realtime Balance: X" subtotal line that immediately
+                # follows it (that figure belongs to the pending items,
+                # not the main running balance), and let normal row
+                # validation below decide: a row that still produces a
+                # real balance value keeps being included; the moment a
+                # row's balance cell comes up completely empty, THAT is
+                # the real signal this has become the other, balance-less
+                # table shape, and only then does parsing stop.
+                seen_pending_marker = True
+                prev_was_data = False
+                continue
+            if seen_pending_marker and "realtime balance" in raw_low:
+                prev_was_data = False
+                continue
 
             if REPORT_TIMESTAMP_RE.search(raw):
                 prev_was_data = False
@@ -541,6 +566,24 @@ def parse_words_strategy(pdf):
                 continue
 
             cells = assign_columns(line, intervals)
+            if seen_pending_marker and not cells.get("balance", "").strip():
+                has_other_content = any(
+                    cells.get(k, "").strip() for k in cells if k != "balance"
+                )
+                if has_other_content:
+                    # This row has real content somewhere but no balance
+                    # value at all, despite the main table always having
+                    # one - the real signal that we've crossed into the
+                    # OTHER pending-items table shape (Date/Description/
+                    # Merchant Name/Amount, no balance column - and note
+                    # its Amount can land in whichever of THIS table's
+                    # intervals it happens to overlap, not necessarily
+                    # the amount/debit/credit cell specifically, since
+                    # it's a completely different column layout), not
+                    # just a mid-statement marker with normal data
+                    # continuing. Stop for real from here.
+                    seen_pending = True
+                    break
             row = build_row(cells, raw_low)
             if row:
                 if not row["date"] and prev_date and row["row_type"] == "transaction":
