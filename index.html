@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bank Reconciliation — Abed Tahan</title>
+<style>
+  header img {
+    width: 150px;
+    margin-bottom: -15px !important;
+}
+  :root {
+    --blue: #1565C0;
+    --blue-dark: #0D47A1;
+    --yellow: #FFD600;
+    --ink: #1a2330;
+    --muted: #66707d;
+    --line: #dde3ea;
+    --bg: #f4f6f9;
+    --red: #c62828;
+    --amber: #b26a00;
+    --green: #2e7d32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header {
+    background: var(--blue);
+    color: #fff;
+    padding: 18px 24px;
+    text-align: center;
+  }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; text-align: center; }
+  header p { margin: 4px 0 0; font-size: 13px; opacity: .85; text-align: center; }
+  main { max-width: 1100px; margin: 24px auto; padding: 0 24px; }
+
+  .uploads { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .uploads { grid-template-columns: 1fr; } }
+
+  .drop {
+    background: #fff;
+    border: 2px dashed var(--line);
+    border-radius: 8px;
+    padding: 26px 18px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.dragover { border-color: var(--blue); background: #eef4fc; }
+  .drop.loaded { border-style: solid; border-color: var(--blue); }
+  .drop h2 { margin: 0 0 4px; font-size: 15px; }
+  .drop .hint { font-size: 12.5px; color: var(--muted); margin: 0; }
+  .drop .filename { font-size: 13px; color: var(--blue-dark); font-weight: 600; margin-top: 8px; word-break: break-all; }
+  .drop input { display: none; }
+
+  .our-file-row {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    margin-top: 4px; font-size: 13px; color: var(--blue-dark); font-weight: 600;
+  }
+  .our-file-row .remove-file {
+    background: none; border: none; color: var(--red); font-weight: 700;
+    font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
+  }
+
+  .actions { margin: 18px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button {
+    font: inherit;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 22px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  #compareBtn { background: var(--blue); color: #fff; }
+  #compareBtn:hover:enabled { background: var(--blue-dark); }
+  #compareBtn:disabled { background: #b8c4d2; cursor: not-allowed; }
+  #status { font-size: 13.5px; color: var(--muted); }
+  #status.error { color: var(--red); font-weight: 600; }
+
+  #summary {
+    display: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 14.5px;
+    margin-bottom: 14px;
+  }
+  #totals {
+    display: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+  }
+  #totals table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  #totals th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  #totals td { padding: 5px 10px 5px 0; text-align: right; }
+  #totals td:first-child { text-align: left; font-weight: 600; }
+  #totals .diff-row td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
+  #totals .diff-ok { color: var(--green); }
+  #totals .diff-bad { color: var(--red); }
+  #totals .panel-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  #asof {
+    display: none;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+  }
+  #asof table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  #asof th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  #asof td { padding: 5px 10px 5px 0; text-align: right; }
+  #asof td:first-child { text-align: left; font-weight: 600; }
+  #asof .diff-row td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
+  #asof .diff-ok { color: var(--green); }
+  #asof .diff-bad { color: var(--red); }
+  #asof .panel-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .breakdown-block { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .breakdown-block .bridge-summary { font-size: 13.5px; margin-bottom: 10px; }
+  .breakdown-block table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .breakdown-block th { text-align: left; font-weight: 600; color: #666; padding: 4px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  .breakdown-block td { padding: 5px 10px 5px 0; }
+  .breakdown-block td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .breakdown-block .bridge-total td { border-top: 1px solid var(--line); font-weight: 700; padding-top: 8px; }
+  .breakdown-block .bridge-residual.ok td { color: var(--green); }
+  .breakdown-block .bridge-residual.bad td { color: var(--amber); }
+  #warnings {
+    display: none;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 18px;
+    font-size: 13px;
+    color: black;
+    margin-bottom: 14px;
+    white-space: pre-wrap;
+  }
+
+  .table-wrap { overflow-x: hidden; background: #fff; border: 1px solid var(--line); border-radius: 8px; display: none; }
+  .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; font-size: 13px; }
+  .filter-bar .filter-label { font-weight: 600; color: var(--muted); }
+  .filter-bar label { display: flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+  .filter-bar input[type="checkbox"] { cursor: pointer; }
+  .filter-bar button { background: #fff; border: 1px solid var(--line); color: var(--blue); padding: 4px 10px; font-size: 12px; }
+  .filter-bar .filter-actions { margin-left: auto; display: flex; gap: 8px; }
+  .filtered-hidden-note { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+  #tableWrap table { border-collapse: collapse; width: 100%; font-size: 11.5px; table-layout: fixed; }
+  #tableWrap th, #tableWrap td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: normal; word-break: break-word; overflow-wrap: break-word; vertical-align: top; }
+  #tableWrap td.desc { white-space: normal; }
+  #tableWrap th { background: #f0f3f7; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); position: sticky; top: 0; }
+  #tableWrap td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #tableWrap tr:last-child td { border-bottom: 0; }
+  #tableWrap th:nth-child(1), #tableWrap td:nth-child(1) { width: 13%; }
+  #tableWrap th:nth-child(2), #tableWrap td:nth-child(2) { width: 9%; }
+  #tableWrap th:nth-child(3), #tableWrap td:nth-child(3) { width: 37%; }
+  #tableWrap th:nth-child(4), #tableWrap td:nth-child(4),
+  #tableWrap th:nth-child(5), #tableWrap td:nth-child(5),
+  #tableWrap th:nth-child(6), #tableWrap td:nth-child(6),
+  #tableWrap th:nth-child(7), #tableWrap td:nth-child(7) { width: 10.25%; }
+
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 700; }
+  .badge.missing_in_ours { background: #fdecea; color: var(--red); }
+  .badge.missing_in_bank { background: #fff3e0; color: var(--amber); }
+  .badge.date_mismatch { background: #e3f2fd; color: #1565c0; }
+
+  .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 16px; font-size: 13.5px; color: var(--muted); }
+  .filter-row label { display: flex; align-items: center; gap: 6px; }
+  .filter-row input[type="date"] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .filter-row select { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); }
+  .filter-row button { background: #fff; color: var(--blue); border: 1px solid var(--blue); padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+
+  .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+  .downloads button { font: inherit; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; border: 1px solid; }
+  .dl-missing, .dl-diff, .dl-common { color: black !important; border-color: var(--line) !important; font-size: 12px !important; background: white !important;}
+  .dl-print { color: var(--blue) !important; border-color: var(--blue) !important; font-size: 12px !important; background: white !important; }
+  .downloads button:disabled { opacity: .45; cursor: not-allowed; }
+
+  .allclear { display: none; background: #e8f5e9; color: var(--green); border-radius: 8px; padding: 16px 18px; font-weight: 600; }
+
+  @page { size: landscape; margin: 10mm; }
+  @media print {
+    .uploads, .filter-row, .actions, .downloads, #warnings, #filterBar, #filteredHiddenNote { display: none !important; }
+    body { background: #fff; }
+    main { max-width: none; margin: 0; padding: 0; }
+    .table-wrap { border: none; box-shadow: none; overflow: visible; }
+    #summary { border: none; padding: 0 0 10px; font-size: 12px; }
+    #totals { border: none; padding: 0 0 10px; }
+    #tableWrap table { font-size: 9px; width: 100%; table-layout: fixed; }
+    #tableWrap th, #tableWrap td { padding: 4px 5px; word-break: break-word; white-space: normal !important; }
+    td.desc { min-width: 0; }
+    .badge { padding: 1px 5px; font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <img src="https://abedtahan.com/cdn/shop/files/AT_Logo_400x200_Transparent.png?v=1732612010&width=250" />
+  <h1>Bank Reconciliation</h1>
+  <p>Upload our ledger and the bank's own statement, then compare. Only discrepancies are shown.</p>
+</header>
+
+<main>
+  <div class="uploads">
+    <div class="drop" id="dropOurs">
+      <h2>Our file</h2>
+      <p class="hint">Fixed-template statement of account (doPDF). You can add more than one (e.g. separate monthly statements) — click or drop one or more PDFs.</p>
+      <div class="filename" id="oursFileList"></div>
+      <input type="file" id="fileOurs" accept="application/pdf" multiple>
+    </div>
+    <div class="drop" id="dropBank">
+      <h2>Bank statement</h2>
+      <p class="hint">The bank's own statement — PDF, Excel (.xlsx), or CSV, any layout. Click or drop a file.</p>
+      <p class="filename" id="nameBank"></p>
+      <input type="file" id="fileBank" accept="application/pdf,.pdf,.xlsx,.xls,.csv">
+    </div>
+  </div>
+
+  <div class="filter-row">
+    <label>From <input type="date" id="dateFrom"></label>
+    <label>To <input type="date" id="dateTo"></label>
+    <button id="clearDatesBtn" type="button">Clear dates</button>
+    <span id="dateHint"></span>
+  </div>
+
+  <div class="filter-row">
+    <label>Show <select id="viewMode">
+      <option value="both">Both boxes</option>
+      <option value="period">Period change only</option>
+      <option value="asof">Balance as of only</option>
+    </select></label>
+  </div>
+
+  <div class="actions">
+    <!-- BUILD_TAG (index.html): 2026-08-27-bank-v1 -->
+    <button id="compareBtn" disabled data-build="2026-08-27-bank-v1">Compare</button>
+    <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="summary"></div>
+  <div id="totals" style="display:none;">
+    <div id="totalsMetrics"></div>
+    <div id="totalsBreakdown"></div>
+  </div>
+  <div id="asof" style="display:none;"></div>
+  <div class="downloads" id="downloads" style="display:none;">
+    <button class="dl-common" id="commonCsvBtn">Download common (matched)</button>
+    <button class="dl-missing" id="missingOursCsvBtn">Download missing from our file</button>
+    <button class="dl-missing" id="missingBankCsvBtn">Download missing from bank</button>
+    <button class="dl-diff" id="diffCsvBtn">Download differences</button>
+    <button class="dl-print" id="printBtn">Print</button>
+  </div>
+  <div id="warnings"></div>
+  <div class="allclear" id="allclear">No discrepancies — every transaction matched.</div>
+  <div class="filter-bar" id="filterBar" style="display:none;">
+    <span class="filter-label">Show:</span>
+    <label><input type="checkbox" class="issueFilter" value="date_mismatch" checked> Date mismatch</label>
+    <label><input type="checkbox" class="issueFilter" value="missing_in_ours" checked> Missing in our file</label>
+    <label><input type="checkbox" class="issueFilter" value="missing_in_bank" checked> Missing in bank</label>
+    <div class="filter-actions">
+      <button type="button" id="filterAllBtn">All</button>
+      <button type="button" id="filterNoneBtn">None</button>
+    </div>
+  </div>
+  <div class="filtered-hidden-note" id="filteredHiddenNote" style="display:none;"></div>
+
+  <div class="table-wrap" id="tableWrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Issue</th><th>Date</th><th>Description</th>
+          <th>Our debit</th><th>Our credit</th>
+          <th>Bank debit</th><th>Bank credit</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+(function () {
+  var MAX_BYTES = 3.2 * 1024 * 1024;
+  var files = { ours: [], bank: null };
+  var lastIssues = [];
+  var lastMatched = [];
+
+  function renderOursFileList() {
+    var listEl = document.getElementById('oursFileList');
+    listEl.innerHTML = '';
+    files.ours.forEach(function (f, idx) {
+      var row = document.createElement('div');
+      row.className = 'our-file-row';
+      var span = document.createElement('span');
+      span.textContent = f.name + ' (' + Math.round(f.size / 1024) + ' KB)';
+      var rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'remove-file';
+      rm.textContent = '\u00d7';
+      rm.title = 'Remove this file';
+      rm.addEventListener('click', function (e) {
+        e.stopPropagation();
+        files.ours.splice(idx, 1);
+        renderOursFileList();
+        document.getElementById('dropOurs').classList.toggle('loaded', files.ours.length > 0);
+        updateButton();
+      });
+      row.appendChild(span);
+      row.appendChild(rm);
+      listEl.appendChild(row);
+    });
+  }
+
+  function setupOursDrop(zoneId, inputId, allowedExts) {
+    var zone = document.getElementById(zoneId);
+    var input = document.getElementById(inputId);
+    function acceptFiles(fileList) {
+      var addedAny = false;
+      for (var i = 0; i < fileList.length; i++) {
+        var file = fileList[i];
+        var ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (allowedExts.indexOf(ext) === -1) {
+          setStatus('"' + file.name + '" is not a supported file type (' + allowedExts.join(', ') + ').', true);
+          continue;
+        }
+        if (file.size > MAX_BYTES) {
+          setStatus('"' + file.name + '" is over 3 MB — compress or split it first.', true);
+          continue;
+        }
+        files.ours.push(file);
+        addedAny = true;
+      }
+      if (addedAny) setStatus('');
+      zone.classList.toggle('loaded', files.ours.length > 0);
+      renderOursFileList();
+      updateButton();
+    }
+    zone.addEventListener('click', function () { input.click(); });
+    input.addEventListener('change', function () {
+      acceptFiles(input.files);
+      input.value = '';
+    });
+    zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', function () { zone.classList.remove('dragover'); });
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault(); zone.classList.remove('dragover');
+      acceptFiles(e.dataTransfer.files);
+    });
+  }
+
+  function setupDrop(zoneId, inputId, nameId, key, allowedExts) {
+    var zone = document.getElementById(zoneId);
+    var input = document.getElementById(inputId);
+    var name = document.getElementById(nameId);
+    function accept(file) {
+      if (!file) return;
+      var ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (allowedExts.indexOf(ext) === -1) {
+        setStatus('"' + file.name + '" is not a supported file type (' + allowedExts.join(', ') + ').', true); return;
+      }
+      if (file.size > MAX_BYTES) {
+        setStatus('"' + file.name + '" is over 3 MB — compress or split it first.', true); return;
+      }
+      files[key] = file;
+      name.textContent = file.name + ' (' + Math.round(file.size / 1024) + ' KB)';
+      zone.classList.add('loaded');
+      setStatus('');
+      updateButton();
+    }
+    zone.addEventListener('click', function () { input.click(); });
+    input.addEventListener('change', function () { accept(input.files[0]); });
+    zone.addEventListener('dragover', function (e) { e.preventDefault(); zone.classList.add('dragover'); });
+    zone.addEventListener('dragleave', function () { zone.classList.remove('dragover'); });
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault(); zone.classList.remove('dragover');
+      accept(e.dataTransfer.files[0]);
+    });
+  }
+
+  function updateButton() {
+    document.getElementById('compareBtn').disabled = !(files.ours.length > 0 && files.bank);
+  }
+
+  function setStatus(msg, isError) {
+    var el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = isError ? 'error' : '';
+  }
+
+  function toBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(String(r.result).split(',')[1]); };
+      r.onerror = function () { reject(new Error('Could not read ' + file.name)); };
+      r.readAsDataURL(file);
+    });
+  }
+
+  function post(url, payload) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().catch(function () {
+        throw new Error(url + ' returned ' + res.status + ' with no JSON body');
+      }).then(function (data) {
+        if (!res.ok || data.error) throw new Error(data.error || (url + ' failed (' + res.status + ')'));
+        return data;
+      });
+    });
+  }
+
+  function fmt(v) {
+    if (v === null || v === undefined) return '—';
+    return Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  var LABELS = {
+    missing_in_bank: 'Missing in bank',
+    missing_in_ours: 'Missing in ours',
+    date_mismatch: 'Date mismatch'
+  };
+  var DIFF_KINDS = ['date_mismatch'];
+
+  var lastMissingOurs = [];
+  var lastMissingBank = [];
+  var lastDiffs = [];
+  var totalsHasContent = false;
+  var asofHasContent = false;
+
+  function applyViewMode() {
+    var mode = document.getElementById('viewMode').value;
+    var totalsEl = document.getElementById('totals');
+    var asofEl = document.getElementById('asof');
+    totalsEl.style.display = (totalsHasContent && mode !== 'asof') ? 'block' : 'none';
+    asofEl.style.display = (asofHasContent && mode !== 'period') ? 'block' : 'none';
+  }
+
+  document.getElementById('viewMode').addEventListener('change', applyViewMode);
+
+  function renderTotalsTable(s, ourDebit, ourCredit, ourNet, bankDebit, bankCredit, bankNet) {
+    var diffAbs = Math.abs(s.net_difference);
+    var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
+    var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
+    document.getElementById('totalsMetrics').innerHTML =
+      '<div class="panel-label"><strong>Period change</strong> — how much moved during ' + esc(s.our_date_range ? s.our_date_range[0] + ' → ' + s.our_date_range[1] : 'this period') + ', matching individual transactions</div>' +
+      '<table>' +
+      '<tr><th></th><th>Debit</th><th>Credit</th><th>Net</th></tr>' +
+      '<tr><td>Our file</td><td>' + fmt(ourDebit) + '</td><td>' + fmt(ourCredit) + '</td><td>' + fmt(ourNet) + '</td></tr>' +
+      '<tr><td>Bank <span style="font-weight:400;color:#999;font-size:12px;">(within our date range)</span></td><td>' + fmt(bankDebit) + '</td><td>' + fmt(bankCredit) + '</td><td>' + fmt(bankNet) + '</td></tr>' +
+      '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
+      '</table>';
+  }
+
+  function findAsOfBalance(rows, asOfDate) {
+    var candidates = rows.filter(function (r) {
+      return r.row_type === 'transaction' && r.date && r.balance !== undefined && r.balance !== null &&
+        (!asOfDate || r.date <= asOfDate);
+    });
+    if (!candidates.length) return null;
+    candidates.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+    var last = candidates[candidates.length - 1];
+    return { balance: last.balance, date: last.date };
+  }
+
+  function asOfCumulative(rows, cutoffDate) {
+    var d = 0, c = 0;
+    rows.forEach(function (r) {
+      if (r.row_type === 'transaction' && (!cutoffDate || (r.date && r.date <= cutoffDate))) {
+        d += r.debit || 0; c += r.credit || 0;
+      }
+    });
+    return { debit: Math.round(d * 100) / 100, credit: Math.round(c * 100) / 100 };
+  }
+
+  function renderAsOfPanel(oursFilesRows, bankRowsAll, asOfDate) {
+    var asofEl = document.getElementById('asof');
+    var ourPerFile = oursFilesRows.map(function (rows) { return findAsOfBalance(rows, asOfDate); });
+    var ourValidPoints = ourPerFile.filter(Boolean);
+    var bankPoint = findAsOfBalance(bankRowsAll, asOfDate);
+    if (!ourValidPoints.length || !bankPoint) {
+      asofHasContent = false;
+      applyViewMode();
+      return;
+    }
+
+    var ourOwed = Math.round(ourValidPoints.reduce(function (sum, p) { return sum - p.balance; }, 0) * 100) / 100;
+    var bankOwed = Math.round(bankPoint.balance * 100) / 100;
+    var diff = Math.round((bankOwed - ourOwed) * 100) / 100;
+    var diffAbs = Math.abs(diff);
+    var diffClass = diffAbs <= 1 ? 'diff-ok' : 'diff-bad';
+    var diffSign = diff > 0 ? '+' : (diff < 0 ? '−' : '');
+
+    var ourDates = ourValidPoints.map(function (p) { return p.date; });
+    var uniqueOurDates = ourDates.filter(function (d, i) { return ourDates.indexOf(d) === i; });
+    var ourDateLabel = uniqueOurDates.length === 1 ? uniqueOurDates[0] : ourDates.slice().sort().slice(-1)[0];
+
+    var mismatchNote = (uniqueOurDates.length !== 1 || uniqueOurDates[0] !== bankPoint.date)
+      ? ' <span style="color:#b26a00;">— note: comparing each side\'s most recent available balance, which may fall on different dates' + (oursFilesRows.length > 1 ? ' across our files' : '') + '</span>'
+      : '';
+
+    var ourCum = { debit: 0, credit: 0 };
+    oursFilesRows.forEach(function (rows, idx) {
+      var point = ourPerFile[idx];
+      if (!point) return;
+      var c = asOfCumulative(rows, point.date);
+      ourCum.debit += c.debit; ourCum.credit += c.credit;
+    });
+    ourCum.debit = Math.round(ourCum.debit * 100) / 100;
+    ourCum.credit = Math.round(ourCum.credit * 100) / 100;
+    var bankCum = asOfCumulative(bankRowsAll, bankPoint.date);
+
+    var perFileBreakdown = oursFilesRows.length > 1
+      ? '<div style="font-size:12px;color:#999;margin-top:6px;">Our file total is the sum of each file\'s own balance: ' +
+        oursFilesRows.map(function (rows, idx) {
+          var p = ourPerFile[idx];
+          return p ? (fmt(Math.round(-p.balance * 100) / 100) + ' (as of ' + esc(p.date) + ')') : 'no data in range';
+        }).join(' + ') + '</div>'
+      : '';
+
+    var ourLabel = oursFilesRows.length > 1
+      ? 'Our files <span style="font-weight:400;color:#999;font-size:12px;">(' + oursFilesRows.length + ' combined, as of ' + esc(ourDateLabel) + ')</span>'
+      : 'Our file <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(ourDateLabel) + ')</span>';
+
+    asofHasContent = true;
+    asofEl.innerHTML =
+      '<div class="panel-label"><strong>Balance as of ' + esc(asOfDate || bankPoint.date) + '</strong> — what each side\'s own running balance says, ignoring the "From" date' + mismatchNote + '</div>' +
+      '<table>' +
+      '<tr><th></th><th>Debit</th><th>Credit</th><th>Balance</th></tr>' +
+      '<tr><td>' + ourLabel + '</td><td>' + fmt(ourCum.debit) + '</td><td>' + fmt(ourCum.credit) + '</td><td>' + fmt(ourOwed) + '</td></tr>' +
+      '<tr><td>Bank <span style="font-weight:400;color:#999;font-size:12px;">(as of ' + esc(bankPoint.date) + ')</span></td><td>' + fmt(bankCum.debit) + '</td><td>' + fmt(bankCum.credit) + '</td><td>' + fmt(bankOwed) + '</td></tr>' +
+      '<tr class="diff-row"><td>Difference</td><td></td><td></td><td class="' + diffClass + '">' + diffSign + fmt(diffAbs) + '</td></tr>' +
+      '</table>' + perFileBreakdown;
+
+    applyViewMode();
+  }
+
+  function render(result, warnings) {
+    var s = result.summary;
+    var issues = result.issues || [];
+    var matched = result.matched || [];
+    lastIssues = issues;
+    lastMatched = matched;
+    lastMissingOurs = issues.filter(function (r) { return r.issue === 'missing_in_bank'; });
+    lastMissingBank = issues.filter(function (r) { return r.issue === 'missing_in_ours'; });
+    lastDiffs = issues.filter(function (r) { return DIFF_KINDS.indexOf(r.issue) !== -1; });
+
+    var summaryEl = document.getElementById('summary');
+    summaryEl.style.display = 'block';
+    summaryEl.innerHTML =
+      '<strong>' + s.matched + ' matched, ' +
+      s.date_mismatch + ' date mismatch' + (s.date_mismatch === 1 ? '' : 'es') + ', ' +
+      s.missing_in_bank + ' missing from bank, ' +
+      s.missing_in_ours + ' missing from our file</strong>' +
+      ' — ' + s.our_transactions + ' of our transactions vs ' + s.bank_transactions + ' bank rows.' +
+      (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '') +
+      ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>';
+
+    if (s.our_net !== undefined) {
+      totalsHasContent = true;
+      renderTotalsTable(s, s.our_total_debit, s.our_total_credit, s.our_net,
+        s.bank_total_debit, s.bank_total_credit, s.bank_net);
+      renderTotalsBreakdown(s, issues);
+    } else {
+      totalsHasContent = false;
+    }
+    applyViewMode();
+
+    var warnEl = document.getElementById('warnings');
+    if (warnings && warnings.length) {
+      warnEl.style.display = 'block';
+      warnEl.textContent = 'Parser warnings from our file:\n• ' + warnings.join('\n• ');
+    } else {
+      warnEl.style.display = 'none';
+    }
+
+    var hasIssues = issues.length > 0;
+    document.getElementById('filterBar').style.display = hasIssues ? 'flex' : 'none';
+    var dl = document.getElementById('downloads');
+    dl.style.display = 'flex';
+    document.getElementById('commonCsvBtn').disabled = matched.length === 0;
+    document.getElementById('missingOursCsvBtn').disabled = lastMissingOurs.length === 0;
+    document.getElementById('missingBankCsvBtn').disabled = lastMissingBank.length === 0;
+    document.getElementById('diffCsvBtn').disabled = lastDiffs.length === 0;
+
+    renderIssuesTable();
+  }
+
+  function issueContribution(row) {
+    return (row.our_credit - row.our_debit) - (row.bank_debit - row.bank_credit);
+  }
+
+  var BRIDGE_ORDER = ['missing_in_bank', 'missing_in_ours', 'date_mismatch'];
+
+  function computeBridge(s, issues) {
+    var groups = {};
+    DIFF_KINDS.concat(['missing_in_bank', 'missing_in_ours']).forEach(function (k) {
+      groups[k] = { count: 0, amount: 0 };
+    });
+    issues.forEach(function (row) {
+      if (!groups[row.issue]) groups[row.issue] = { count: 0, amount: 0 };
+      groups[row.issue].count++;
+      groups[row.issue].amount += issueContribution(row);
+    });
+    Object.keys(groups).forEach(function (k) { groups[k].amount = Math.round(groups[k].amount * 100) / 100; });
+
+    var explained = 0;
+    Object.keys(groups).forEach(function (k) { explained += groups[k].amount; });
+    var residual = Math.round((s.net_difference - explained) * 100) / 100;
+
+    return { groups: groups, residual: residual };
+  }
+
+  function bridgeTableHtml(s, groups, residual) {
+    var rowsHtml = '';
+    BRIDGE_ORDER.forEach(function (k) {
+      var g = groups[k];
+      if (!g || g.count === 0) return;
+      var sign = g.amount > 0 ? '+' : (g.amount < 0 ? '−' : '');
+      rowsHtml += '<tr><td>' + (LABELS[k] || k) + ' <span style="color:#999;font-weight:400;">(' + g.count + ')</span></td>' +
+        '<td class="num">' + sign + fmt(Math.abs(g.amount)) + '</td></tr>';
+    });
+
+    var residualClass = Math.abs(residual) <= 1 ? 'ok' : 'bad';
+    var residualSign = residual > 0 ? '+' : (residual < 0 ? '−' : '');
+    var residualNote = Math.abs(residual) <= 1
+      ? ''
+      : ' <span style="font-weight:400;color:#999;">— usually a difference in how each side struck its opening balance</span>';
+    rowsHtml += '<tr class="bridge-residual ' + residualClass + '"><td>Unexplained residual' + residualNote + '</td>' +
+      '<td class="num">' + residualSign + fmt(Math.abs(residual)) + '</td></tr>';
+
+    var diffAbs = Math.abs(s.net_difference);
+    var diffSign = s.net_difference > 0 ? '+' : (s.net_difference < 0 ? '−' : '');
+    rowsHtml += '<tr class="bridge-total"><td>Total difference</td><td class="num">' + diffSign + fmt(diffAbs) + '</td></tr>';
+    return '<table><tr><th></th><th style="text-align:right;">Amount</th></tr>' + rowsHtml + '</table>';
+  }
+
+  function fallbackSentence(s, groups) {
+    var diffAbs = Math.abs(s.net_difference);
+    var topKey = BRIDGE_ORDER.filter(function (k) { return groups[k] && groups[k].count > 0; })
+      .sort(function (a, b) { return Math.abs(groups[b].amount) - Math.abs(groups[a].amount); })[0];
+    return topKey
+      ? 'Most of the ' + fmt(diffAbs) + ' difference comes from ' + groups[topKey].count + ' row' + (groups[topKey].count === 1 ? '' : 's') +
+        ' ' + (LABELS[topKey] || topKey).toLowerCase() + ' (' + fmt(Math.abs(groups[topKey].amount)) + ').'
+      : '';
+  }
+
+  function renderTotalsBreakdown(s, issues) {
+    var bridgeEl = document.getElementById('totalsBreakdown');
+    if (s.our_net === undefined || !issues.length) {
+      bridgeEl.innerHTML = '';
+      return;
+    }
+
+    var bridge = computeBridge(s, issues);
+    bridgeEl.className = 'breakdown-block';
+    bridgeEl.innerHTML =
+      '<div class="bridge-summary"><strong>Why the difference?</strong> ' + esc(fallbackSentence(s, bridge.groups)) + '</div>' +
+      bridgeTableHtml(s, bridge.groups, bridge.residual);
+  }
+
+  function activeIssueFilters() {
+    var active = {};
+    document.querySelectorAll('.issueFilter').forEach(function (cb) {
+      if (cb.checked) active[cb.value] = true;
+    });
+    return active;
+  }
+
+  function renderIssuesTable() {
+    var issues = lastIssues || [];
+    var hasIssues = issues.length > 0;
+    var active = activeIssueFilters();
+    var filtered = issues.filter(function (row) { return active[row.issue]; });
+
+    var tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    filtered.forEach(function (row) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><span class="badge ' + esc(row.issue) + '">' + (LABELS[row.issue] || esc(row.issue)) + '</span></td>' +
+        '<td>' + esc(row.date) + '</td>' +
+        '<td class="desc">' + esc(row.description) + '</td>' +
+        '<td class="num">' + fmt(row.our_debit) + '</td>' +
+        '<td class="num">' + fmt(row.our_credit) + '</td>' +
+        '<td class="num">' + fmt(row.bank_debit) + '</td>' +
+        '<td class="num">' + fmt(row.bank_credit) + '</td>';
+      tbody.appendChild(tr);
+    });
+
+    var noteEl = document.getElementById('filteredHiddenNote');
+    var hiddenCount = issues.length - filtered.length;
+    if (hasIssues && hiddenCount > 0) {
+      noteEl.style.display = 'block';
+      noteEl.textContent = hiddenCount + ' row' + (hiddenCount === 1 ? '' : 's') + ' hidden by the filter above (' + filtered.length + ' of ' + issues.length + ' shown).';
+    } else {
+      noteEl.style.display = 'none';
+    }
+
+    document.getElementById('tableWrap').style.display = (hasIssues && filtered.length > 0) ? 'block' : 'none';
+    var allclearEl = document.getElementById('allclear');
+    if (!hasIssues) {
+      allclearEl.style.display = 'block';
+      allclearEl.textContent = 'No discrepancies — every transaction matched.';
+    } else if (filtered.length === 0) {
+      allclearEl.style.display = 'block';
+      allclearEl.textContent = 'Nothing to show — every difference is hidden by the current filter (' + issues.length + ' total, filtered out above).';
+    } else {
+      allclearEl.style.display = 'none';
+    }
+  }
+
+  document.querySelectorAll('.issueFilter').forEach(function (cb) {
+    cb.addEventListener('change', renderIssuesTable);
+  });
+  document.getElementById('filterAllBtn').addEventListener('click', function () {
+    document.querySelectorAll('.issueFilter').forEach(function (cb) { cb.checked = true; });
+    renderIssuesTable();
+  });
+  document.getElementById('filterNoneBtn').addEventListener('click', function () {
+    document.querySelectorAll('.issueFilter').forEach(function (cb) { cb.checked = false; });
+    renderIssuesTable();
+  });
+
+  function inRange(dateStr, from, to) {
+    if (!dateStr) return true;
+    if (from && dateStr < from) return false;
+    if (to && dateStr > to) return false;
+    return true;
+  }
+
+  function filterRowsByDate(rows, from, to) {
+    if (!from && !to) return rows;
+    return rows.filter(function (r) {
+      if (r.row_type !== 'transaction') return true;
+      return inRange(r.date, from, to);
+    });
+  }
+
+  document.getElementById('clearDatesBtn').addEventListener('click', function () {
+    document.getElementById('dateFrom').value = '';
+    document.getElementById('dateTo').value = '';
+  });
+
+  document.getElementById('compareBtn').addEventListener('click', function () {
+    var btn = this;
+    if (!files.ours.length || !files.bank) {
+      setStatus('Please re-select both files before comparing.', true);
+      updateButton();
+      return;
+    }
+    btn.disabled = true;
+    document.getElementById('summary').style.display = 'none';
+    document.getElementById('totals').style.display = 'none';
+    document.getElementById('asof').style.display = 'none';
+    document.getElementById('tableWrap').style.display = 'none';
+    document.getElementById('allclear').style.display = 'none';
+    document.getElementById('filterBar').style.display = 'none';
+    document.getElementById('filteredHiddenNote').style.display = 'none';
+    document.getElementById('downloads').style.display = 'none';
+    document.getElementById('warnings').style.display = 'none';
+    setStatus('Reading files…');
+
+    var dateFrom = document.getElementById('dateFrom').value;
+    var dateTo = document.getElementById('dateTo').value;
+
+    Promise.all([
+      Promise.all(files.ours.map(toBase64)),
+      toBase64(files.bank)
+    ])
+      .then(function (b64s) {
+        var oursB64List = b64s[0], bankB64 = b64s[1];
+        if (oursB64List.some(function (b) { return !b; }) || !bankB64) {
+          throw new Error('One of the files could not be read - please re-select it and try again.');
+        }
+        setStatus('Extracting ' + oursB64List.length + ' of our file' + (oursB64List.length === 1 ? '' : 's') + ' and the bank statement…');
+        return Promise.all([
+          Promise.all(oursB64List.map(function (b64) { return post('/api/extract-ours', { pdf_base64: b64 }); })),
+          post('/api/extract-bank', { file_base64: bankB64, filename: files.bank.name })
+        ]);
+      })
+      .then(function (results) {
+        var oursResultsList = results[0], bank = results[1];
+        var oursRowsAll = [], oursWarningsAll = [], oursBuildTag = null;
+        oursResultsList.forEach(function (r, idx) {
+          oursRowsAll = oursRowsAll.concat(r.rows);
+          (r.warnings || []).forEach(function (w) {
+            oursWarningsAll.push((oursResultsList.length > 1 ? '[' + files.ours[idx].name + '] ' : '') + w);
+          });
+          oursBuildTag = r.build_tag || oursBuildTag;
+        });
+
+        var oursRows = filterRowsByDate(oursRowsAll, dateFrom, dateTo);
+        var bankRows = filterRowsByDate(bank.rows, dateFrom, dateTo);
+        var hint = document.getElementById('dateHint');
+        var filterPart = (dateFrom || dateTo) ?
+          'filtered: ' + oursRows.length + ' of ' + oursRowsAll.length + ' our rows, ' +
+          bankRows.length + ' of ' + bank.rows.length + ' bank rows | ' :
+          'extracted: ' + oursRowsAll.length + ' our rows' + (files.ours.length > 1 ? ' from ' + files.ours.length + ' files' : '') + ', ' + bank.rows.length + ' bank rows | ';
+        hint.textContent = '(' + filterPart +
+          'extractor builds: ours=' + (oursBuildTag || 'unknown') +
+          ', bank=' + (bank.build_tag || 'unknown') + ')';
+        setStatus('Matching ' + oursRows.length + ' vs ' + bankRows.length + ' rows…');
+
+        var oursMinDate = null;
+        oursRows.forEach(function (r) {
+          if (r.row_type === 'transaction' && r.date && (oursMinDate === null || r.date < oursMinDate)) {
+            oursMinDate = r.date;
+          }
+        });
+
+        var bankPreRangeBalance = null;
+        if (oursMinDate) {
+          var beforeRange = bank.rows.filter(function (r) {
+            return r.row_type === 'transaction' && r.date && r.balance !== undefined && r.balance !== null && r.date < oursMinDate;
+          });
+          if (beforeRange.length) {
+            beforeRange.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+            bankPreRangeBalance = beforeRange[beforeRange.length - 1].balance;
+          }
+        }
+
+        return post('/api/compare', { ours: oursRows, bank: bankRows, bank_pre_range_balance: bankPreRangeBalance })
+          .then(function (cmp) {
+            render(cmp, oursWarningsAll);
+            renderAsOfPanel(oursResultsList.map(function (r) { return r.rows; }), bank.rows, dateTo || null);
+          });
+      })
+      .then(function () { setStatus('Done.'); })
+      .catch(function (err) { setStatus(err.message, true); })
+      .finally(function () { btn.disabled = false; updateButton(); });
+  });
+
+  document.getElementById('commonCsvBtn').addEventListener('click', function () {
+    downloadCsv(lastMatched,
+      ['date', 'our_id', 'bank_id', 'description', 'our_debit', 'our_credit', 'bank_debit', 'bank_credit'],
+      'common-matched.csv');
+  });
+
+  document.getElementById('missingOursCsvBtn').addEventListener('click', function () {
+    downloadCsv(lastMissingOurs,
+      ['date', 'description', 'our_debit', 'our_credit'],
+      'missing-from-bank.csv');
+  });
+
+  document.getElementById('missingBankCsvBtn').addEventListener('click', function () {
+    downloadCsv(lastMissingBank,
+      ['date', 'description', 'bank_debit', 'bank_credit'],
+      'missing-from-ours.csv');
+  });
+
+  document.getElementById('diffCsvBtn').addEventListener('click', function () {
+    downloadCsv(lastDiffs,
+      ['issue', 'description', 'our_date', 'bank_date',
+       'our_debit', 'our_credit', 'bank_debit', 'bank_credit'],
+      'differences.csv');
+  });
+
+  document.getElementById('printBtn').addEventListener('click', function () {
+    window.print();
+  });
+
+  function downloadCsv(rows, header, filename) {
+    function cell(v) {
+      if (v === null || v === undefined) v = '';
+      v = String(v);
+      return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    }
+    var lines = [header.join(',')];
+    rows.forEach(function (r) {
+      lines.push(header.map(function (k) { return cell(r[k]); }).join(','));
+    });
+    var blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  setupOursDrop('dropOurs', 'fileOurs', ['pdf']);
+  setupDrop('dropBank', 'fileBank', 'nameBank', 'bank', ['pdf', 'xlsx', 'xls', 'csv']);
+
+  document.getElementById('clearAllBtn').addEventListener('click', function () {
+    files.ours = [];
+    files.bank = null;
+    document.getElementById('fileOurs').value = '';
+    document.getElementById('fileBank').value = '';
+    document.getElementById('oursFileList').innerHTML = '';
+    document.getElementById('nameBank').textContent = '';
+    document.getElementById('dropOurs').classList.remove('loaded', 'dragover');
+    document.getElementById('dropBank').classList.remove('loaded', 'dragover');
+
+    document.getElementById('dateFrom').value = '';
+    document.getElementById('dateTo').value = '';
+    document.getElementById('dateHint').textContent = '';
+
+    lastIssues = [];
+    lastMatched = [];
+    lastMissingOurs = [];
+    lastMissingBank = [];
+    lastDiffs = [];
+    document.getElementById('summary').style.display = 'none';
+    document.getElementById('summary').innerHTML = '';
+    totalsHasContent = false;
+    asofHasContent = false;
+    document.getElementById('totals').style.display = 'none';
+    document.getElementById('totalsMetrics').innerHTML = '';
+    document.getElementById('totalsBreakdown').innerHTML = '';
+    document.getElementById('asof').style.display = 'none';
+    document.getElementById('asof').innerHTML = '';
+    document.getElementById('tableWrap').style.display = 'none';
+    document.getElementById('tbody').innerHTML = '';
+    document.getElementById('allclear').style.display = 'none';
+    document.getElementById('downloads').style.display = 'none';
+    document.getElementById('warnings').style.display = 'none';
+    document.getElementById('warnings').textContent = '';
+    setStatus('');
+    updateButton();
+  });
+})();
+</script>
+</body>
+</html>
