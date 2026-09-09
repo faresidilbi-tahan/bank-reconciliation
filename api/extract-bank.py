@@ -44,7 +44,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-27-bank-v1"
+BUILD_TAG = "2026-08-27-cr-dr-word-and-day-month-date"
 
 # "amount" is new here vs the supplier parser - a single signed column
 # instead of separate debit/credit. "id" here means whatever reference
@@ -78,10 +78,32 @@ SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
 # aren't cleared/final, so they must never be reconciled as real activity.
 PENDING_SECTION_RE = re.compile(r"pending\s*transactions?", re.IGNORECASE)
 
+# A report-generation timestamp printed as a page footer/header ("1 03
+# Aug 2026, 11:54" - page number, generation date, time-of-day) looks
+# just enough like a data row (it has a valid date) to slip through as a
+# phantom transaction with no real amount data, defaulting its balance to
+# 0.0 and throwing off the balance chain for every row around it.
+# Distinguished from a real transaction by its distinctive signature: a
+# date immediately followed by a comma and a bare HH:MM (no seconds, no
+# AM/PM) - not a pattern any real transaction line has a reason to
+# contain.
+REPORT_TIMESTAMP_RE = re.compile(
+    r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\s*,\s*\d{1,2}:\d{2}\b",
+    re.IGNORECASE)
+
 AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR|DB)?$", re.IGNORECASE)
 NUM_DATE_RE = re.compile(r"(\d{1,4})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{1,4})")
-MONTH_DATE_RE = re.compile(
+# "Month Day, Year" (American-style, e.g. "Jul 12, 2026")
+MONTH_DAY_YEAR_RE = re.compile(
     r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\s*,?\s+(\d{4})",
+    re.IGNORECASE)
+# "Day Month Year" (common international style, e.g. "12 Jul 2026") -
+# a genuinely different word order from the above, not just a formatting
+# variant - seen for real on a BankMed statement where every date was
+# written this way and the American-style pattern alone matched nothing
+# at all, silently leaving every transaction dateless.
+DAY_MONTH_YEAR_RE = re.compile(
+    r"(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*,?\s+(\d{4})",
     re.IGNORECASE)
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
@@ -145,10 +167,17 @@ def detect_date_convention(text):
 
 def find_date(text):
     text = str(text or "")
-    m = MONTH_DATE_RE.search(text)
+    m = MONTH_DAY_YEAR_RE.search(text)
     if m:
         mo = MONTHS[m.group(1).lower()[:3]]
         d, y = int(m.group(2)), int(m.group(3))
+        if 1 <= d <= 31:
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+    m = DAY_MONTH_YEAR_RE.search(text)
+    if m:
+        d = int(m.group(1))
+        mo = MONTHS[m.group(2).lower()[:3]]
+        y = int(m.group(3))
         if 1 <= d <= 31:
             return f"{y:04d}-{mo:02d}-{d:02d}"
     m = NUM_DATE_RE.search(text)
@@ -171,18 +200,51 @@ def find_date(text):
     return None
 
 
+CR_DR_WORD_RE = re.compile(r"(?<![A-Za-z])(CR|DR)(?![A-Za-z])", re.IGNORECASE)
+
+
+def extract_cr_dr_direction(raw_cell):
+    """Some banks encode debit/credit as an explicit word rather than a
+    signed number - either glued onto the number ("719.44CR") or
+    standing as its own separate token in the cell ("USD 719.44 Cr", the
+    number always staying positive either way). Without this, a bank
+    that never uses a minus sign at all would have every single row
+    silently default to credit (seen for real: a BankMed statement where
+    "USD 5 Dr" - a fee, money OUT - was being read as a $5 credit,
+    because the number itself carries no sign and the "Dr" word was
+    being discarded rather than acted on). Returns 'credit', 'debit', or
+    None if no such word appears anywhere in the cell - meaning this
+    bank's convention is a plain signed number instead (e.g. "-18.00"
+    for money out), and the caller should fall back to checking the
+    number's own sign."""
+    m = CR_DR_WORD_RE.search(raw_cell.upper())
+    if not m:
+        return None
+    return "credit" if m.group(1) == "CR" else "debit"
+
+
 def build_row(cells, raw_low):
     date = find_date(cells.get("date", "")) or ""
 
     debit = parse_amount_cell(cells.get("debit", ""))
     credit = parse_amount_cell(cells.get("credit", ""))
     if debit is None and credit is None:
-        # Single signed "Amount" column - negative is money out (debit),
-        # positive is money in (credit). This is the common bank-
-        # statement shape this parser is specifically built to support.
-        amount = parse_amount_cell(cells.get("amount", ""))
+        # Single "Amount" column, one of two conventions: a plain signed
+        # number (negative = money out, positive = money in - BLOM
+        # Bank's style), or an always-positive number paired with an
+        # explicit CR/DR word (BankMed's style, see
+        # extract_cr_dr_direction). The word, when present, always wins -
+        # a signed-number check alone would never catch a bank that
+        # never actually uses a minus sign.
+        amount_cell_raw = cells.get("amount", "")
+        direction = extract_cr_dr_direction(amount_cell_raw)
+        amount = parse_amount_cell(amount_cell_raw)
         if amount is not None:
-            if amount < 0:
+            if direction == "credit":
+                debit, credit = 0.0, amount
+            elif direction == "debit":
+                debit, credit = amount, 0.0
+            elif amount < 0:
                 debit, credit = abs(amount), 0.0
             else:
                 debit, credit = 0.0, amount
@@ -345,14 +407,34 @@ def stitch_wrapped_negative_amounts(lines, intervals):
     return out
 
 
+def merge_orphan_cr_dr_lines(lines):
+    """A lone "Cr" or "Dr" word can wrap onto its own separate physical
+    line, split away from the amount it actually describes (seen for
+    real: "USD 1,034.99" on one line, then just "Dr" alone on the very
+    next line before the balance continues). A standalone Cr/Dr word is
+    never a real transaction on its own, so fold it back into the line
+    above it - otherwise that row's direction silently defaults to
+    credit, since nothing in ITS OWN line carries the word at all."""
+    out = []
+    for line in lines:
+        if len(line) == 1 and line[0]["text"].strip().upper() in ("CR", "DR") and out:
+            out[-1] = sorted(out[-1] + line, key=lambda w: w["x0"])
+        else:
+            out.append(line)
+    return out
+
+
 def parse_words_strategy(pdf):
     rows, warnings = [], []
     anchors = None
     seen_pending = False
+    emitted_opening = [False]  # list-wrapped so the inner per-line block can mutate it
+    emitted_closing = [False]
     for page_no, page in enumerate(pdf.pages, start=1):
         if seen_pending:
             break
         lines = group_lines(page)
+        lines = merge_orphan_cr_dr_lines(lines)
         # Never let a DIFFERENT table's header (like the trailing Pending
         # Transactions section's own "Date Description Merchant Name
         # Amount" line, seen for real on this document's last page)
@@ -386,6 +468,10 @@ def parse_words_strategy(pdf):
                 seen_pending = True
                 break
 
+            if REPORT_TIMESTAMP_RE.search(raw):
+                prev_was_data = False
+                continue
+
             # A sentence-style opening/closing balance line ("Brought
             # Forward Balance: USD 11,356.05 C") isn't real tabular data -
             # its wording doesn't align with the transaction table's own
@@ -393,14 +479,53 @@ def parse_words_strategy(pdf):
             # it across the wrong cells. Pull the balance value straight
             # from the raw line text instead of going through column
             # assignment at all.
-            if any(k in raw_low for k in OPENING_WORDS) or any(k in raw_low for k in CLOSING_WORDS):
-                amounts_found = [a for a in (parse_amount(w["text"]) for w in line) if a is not None]
-                rows.append({
-                    "date": "", "id": "", "description": raw,
-                    "debit": 0.0, "credit": 0.0,
-                    "balance": amounts_found[-1] if amounts_found else 0.0,
-                    "row_type": "opening_balance" if any(k in raw_low for k in OPENING_WORDS) else "closing_balance",
-                })
+            has_opening = any(k in raw_low for k in OPENING_WORDS)
+            has_closing = any(k in raw_low for k in CLOSING_WORDS)
+            if has_opening or has_closing:
+                if has_opening and has_closing:
+                    # Some banks print both figures on ONE summary line
+                    # ("Opening Balance: X | Closing Balance: Y") rather
+                    # than as two separate lines - pair each amount with
+                    # whichever label most recently appeared before it,
+                    # instead of grabbing "the last amount on the line"
+                    # for a single row_type (which silently stored the
+                    # CLOSING figure under opening_balance on a real
+                    # statement seen in practice).
+                    opening_amt, closing_amt, seen = None, None, None
+                    for w in line:
+                        wl = w["text"].strip().lower()
+                        if any(k in wl for k in OPENING_WORDS):
+                            seen = "opening"
+                        elif any(k in wl for k in CLOSING_WORDS):
+                            seen = "closing"
+                        amt = parse_amount(w["text"])
+                        if amt is not None:
+                            if seen == "opening" and opening_amt is None:
+                                opening_amt = amt
+                            elif seen == "closing" and closing_amt is None:
+                                closing_amt = amt
+                else:
+                    amounts_found = [a for a in (parse_amount(w["text"]) for w in line) if a is not None]
+                    single_amt = amounts_found[-1] if amounts_found else None
+                    opening_amt = single_amt if has_opening else None
+                    closing_amt = single_amt if has_closing else None
+
+                # This kind of summary line commonly repeats on every
+                # page (a running page header) - only ever emit each one
+                # ONCE per file, or the balance cross-check downstream
+                # (which requires exactly one opening_balance and one
+                # closing_balance row) would silently stop working the
+                # moment a statement has more than one page.
+                if opening_amt is not None and not emitted_opening[0]:
+                    rows.append({"date": "", "id": "", "description": raw,
+                                 "debit": 0.0, "credit": 0.0, "balance": opening_amt,
+                                 "row_type": "opening_balance"})
+                    emitted_opening[0] = True
+                if closing_amt is not None and not emitted_closing[0]:
+                    rows.append({"date": "", "id": "", "description": raw,
+                                 "debit": 0.0, "credit": 0.0, "balance": closing_amt,
+                                 "row_type": "closing_balance"})
+                    emitted_closing[0] = True
                 prev_was_data = True
                 continue
 
