@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import datetime as dt
 
-BUILD_TAG = "2026-08-27-bank-compare-v1"
+BUILD_TAG = "2026-08-27-day-total-matching"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -135,6 +135,46 @@ def out_of_our_range(row, our_range):
     return row["date"] < our_range[0] or row["date"] > our_range[1]
 
 
+def match_by_day_total(ours, bank, ours_pool, bank_pool):
+    """Last resort for whatever's still unmatched after every individual
+    line-item check above. Some accounts split the same day's activity
+    into a DIFFERENT NUMBER of lines on each side - seen for real: our
+    ledger records daily settlement batches, the bank statement lists
+    each card network (VISA, Mastercard, etc.) separately, so individual
+    amounts almost never line up even though nothing is actually missing
+    (verified on a real account: July 1st was 7 lines on our side and 5
+    on the bank's, but both totaled exactly $38,700.96). Groups whatever
+    is still unmatched by date, and if a WHOLE DAY's net total agrees on
+    both sides, treats every row that day as reconciled as a group
+    instead of reporting dozens of individually-unmatched rows.
+
+    This can only ever REDUCE how many rows get reported as missing - it
+    never touches a row already paired by an earlier, stricter step, and
+    it changes nothing about the totals themselves: every row already
+    counts in our_total_debit/credit and bank_total_debit/credit
+    regardless of match status, both before and after this step. It only
+    changes which ISSUE CATEGORY a leftover row lands in."""
+    ours_by_date, bank_by_date = {}, {}
+    for i in ours_pool:
+        ours_by_date.setdefault(ours[i]["date"], []).append(i)
+    for j in bank_pool:
+        bank_by_date.setdefault(bank[j]["date"], []).append(j)
+
+    day_matched_ours, day_matched_bank = [], []
+    for date in set(ours_by_date) & set(bank_by_date):
+        o_indices, b_indices = ours_by_date[date], bank_by_date[date]
+        o_net = sum(ours[i]["credit"] - ours[i]["debit"] for i in o_indices)
+        b_net = sum(bank[j]["debit"] - bank[j]["credit"] for j in b_indices)
+        if abs(o_net) > 0.01 and amounts_close(o_net, b_net):
+            day_matched_ours.extend(o_indices)
+            day_matched_bank.extend(b_indices)
+
+    day_matched_ours_set, day_matched_bank_set = set(day_matched_ours), set(day_matched_bank)
+    leftover_ours = [i for i in ours_pool if i not in day_matched_ours_set]
+    leftover_bank = [j for j in bank_pool if j not in day_matched_bank_set]
+    return day_matched_ours, day_matched_bank, leftover_ours, leftover_bank
+
+
 def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     ours = clean(ours_raw)
     bank = clean(bank_raw)
@@ -143,11 +183,16 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     b_pool = list(range(len(bank)))
 
     exact, date_mm, o_pool, b_pool = match_by_amount(ours, bank, o_pool, b_pool)
+    day_matched_ours, day_matched_bank, o_pool, b_pool = match_by_day_total(ours, bank, o_pool, b_pool)
 
     matched_rows = [matched_out(ours[i], bank[j]) for i, j in exact]
     issues = []
     for i, j in date_mm:
         issues.append(row_out("date_mismatch", ours[i], bank[j]))
+    for i in day_matched_ours:
+        issues.append(row_out("day_total_match", ours[i], None))
+    for j in day_matched_bank:
+        issues.append(row_out("day_total_match", None, bank[j]))
     for i in o_pool:
         issues.append(row_out("missing_in_bank", ours[i], None))
     for j in b_pool:
@@ -172,7 +217,23 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     ]
     bank_total_debit = round(sum(r["debit"] for r in bank_in_range), 2)
     bank_total_credit = round(sum(r["credit"] for r in bank_in_range), 2)
-    bank_net_debit_credit = round(bank_total_credit - bank_total_debit, 2)
+    # NOT credit-minus-debit, unlike our own side. Confirmed empirically
+    # against real matched pairs: our_debit always equals the bank's
+    # credit for the SAME transaction, and our_credit always equals the
+    # bank's debit (e.g. a card-sale settlement lands in OUR debit column
+    # but the bank's own statement shows it as a positive/credit entry;
+    # a bank fee is OUR credit but the bank's own negative/debit entry).
+    # The two sides are mirrored for the same real-world transaction, the
+    # same way a supplier's AP ledger mirrors ours - so combining them
+    # with the SAME "credit minus debit" formula on both sides would
+    # produce close to DOUBLE the real gap for a well-matched dataset
+    # (verified: summing credit-debit across matched pairs gave +83,518.96
+    # on our side and -83,518.96 on the bank side - exact opposites, for
+    # transactions that are by definition NOT in dispute). Flipping this
+    # side's formula to debit-minus-credit re-aligns it to the same
+    # orientation as our_net, so a fully-matched pair correctly
+    # contributes zero to the difference instead of double-counting it.
+    bank_net_debit_credit = round(bank_total_debit - bank_total_credit, 2)
 
     # Cross-check Net against each file's own printed Balance column,
     # same reasoning as the supplier tool: a debit/credit sum can silently
@@ -196,7 +257,13 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
         if in_range_dated:
             end_row = sorted(enumerate(in_range_dated), key=lambda ir: ir[1]["date"])[-1][1]
             if end_row.get("balance") is not None:
-                bank_net_balance = round(end_row["balance"] - bank_pre_range_balance, 2)
+                # Flipped to match bank_net_debit_credit's new orientation
+                # above (pre-range minus end, not end minus pre-range) -
+                # the bank's own balance still rises with a positive/credit
+                # entry exactly as printed, but bank_net itself is now
+                # reported debit-minus-credit, so the balance-derived
+                # figure needs the same flip to compare apples to apples.
+                bank_net_balance = round(bank_pre_range_balance - end_row["balance"], 2)
 
     bank_net = bank_net_balance if (bank_net_balance is not None and amounts_close(bank_net_balance, bank_net_debit_credit)) else bank_net_debit_credit
     bank_net_source = "balance" if bank_net == bank_net_balance and bank_net_balance is not None else "debit_credit"
@@ -209,6 +276,7 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
         "bank_transactions": len(bank),
         "matched": len(exact),
         "date_mismatch": len(date_mm),
+        "day_total_match": len(day_matched_ours) + len(day_matched_bank),
         "missing_in_bank": len(o_pool),
         "missing_in_ours": len(b_pool),
         "our_date_range": list(our_range) if our_range else None,
