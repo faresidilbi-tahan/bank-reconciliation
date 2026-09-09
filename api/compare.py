@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import datetime as dt
 
-BUILD_TAG = "2026-08-27-day-total-matching"
+BUILD_TAG = "2026-08-27-fix-match-order-day-total-first"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -62,16 +62,48 @@ def clean(rows):
     return out
 
 
+def match_exact_same_day(ours, bank, ours_pool, bank_pool):
+    """Same date AND same amount, exactly - the strictest, safest tier.
+    Deliberately split out from the broader cross-date search below so
+    day-total matching (see match_by_day_total) gets first crack at
+    resolving a day's remaining transactions AS A GROUP, before that
+    broader search gets a chance to steal one of them for a coincidental
+    same-amount match on a completely unrelated date. Verified this
+    actually happened on real data: a $214.95 transaction on July 14 was
+    being matched to an unrelated $214.95 transaction on July 16 (two
+    days away) purely because the amounts coincided, which then left
+    July 14 exactly $214.95 short of balancing on its own - undoing what
+    would otherwise have been a clean day-total match for that date."""
+    bank_by_key = {}
+    for j in bank_pool:
+        key = (bank[j]["date"], round(bank[j]["amt"], 2))
+        bank_by_key.setdefault(key, []).append(j)
+
+    pairs, leftover_ours = [], []
+    for i in ours_pool:
+        key = (ours[i]["date"], round(ours[i]["amt"], 2))
+        bucket = bank_by_key.get(key)
+        if bucket:
+            pairs.append((i, bucket.pop(0)))
+        else:
+            leftover_ours.append(i)
+
+    matched_j = {j for _, j in pairs}
+    leftover_bank = [j for j in bank_pool if j not in matched_j]
+    return pairs, leftover_ours, leftover_bank
+
+
 def match_by_amount(ours, bank, ours_pool, bank_pool):
-    """The ENTIRE matching algorithm for this project. Every candidate
-    pair with a matching amount (to the cent) is a candidate, globally
-    ranked by how close their dates are - the closest-date pairing always
-    wins a shared amount before a farther one, so two rows for the exact
-    same amount on different real dates don't get paired arbitrarily by
-    list order. A pair with identical dates is a clean match; a pair
-    whose dates differ is still a match (the amount agreeing is treated
-    as strong enough evidence on its own) but reported as a date_mismatch
-    so the timing difference is visible rather than silently hidden."""
+    """Cross-date fallback for whatever's left after BOTH
+    match_exact_same_day and match_by_day_total have already had first
+    priority (see compare() for the ordering, and its reasoning). Every
+    candidate pair with a matching amount (to the cent) is a candidate,
+    globally ranked by how close their dates are, so a genuine timing
+    gap (a payment posted a day or two apart on each side) still gets
+    caught and flagged as a date_mismatch - this is only reached once
+    same-day and same-day-group possibilities are exhausted, so a match
+    found here is far more likely to be a real timing difference than a
+    coincidental same-amount collision."""
     candidates = []
     for i in ours_pool:
         o_date = _parse_iso_date(ours[i]["date"])
@@ -182,8 +214,16 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     o_pool = list(range(len(ours)))
     b_pool = list(range(len(bank)))
 
-    exact, date_mm, o_pool, b_pool = match_by_amount(ours, bank, o_pool, b_pool)
+    # Order matters here: same-day exact matches first (safest, most
+    # specific), then day-total matching gets first crack at whatever's
+    # left (grouping a day's transactions together before anything else
+    # can steal one of them), and ONLY THEN the broad cross-date amount
+    # search - see match_exact_same_day's docstring for the real case
+    # this ordering fixes.
+    exact, o_pool, b_pool = match_exact_same_day(ours, bank, o_pool, b_pool)
     day_matched_ours, day_matched_bank, o_pool, b_pool = match_by_day_total(ours, bank, o_pool, b_pool)
+    exact_cross, date_mm, o_pool, b_pool = match_by_amount(ours, bank, o_pool, b_pool)
+    exact = exact + exact_cross
 
     matched_rows = [matched_out(ours[i], bank[j]) for i, j in exact]
     issues = []
