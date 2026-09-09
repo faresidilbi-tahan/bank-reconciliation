@@ -261,8 +261,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-08-27-app-switcher-nav -->
-    <button id="compareBtn" disabled data-build="2026-08-27-app-switcher-nav">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-08-27-fix-asof-balance-sign -->
+    <button id="compareBtn" disabled data-build="2026-08-27-fix-asof-balance-sign">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -521,7 +521,7 @@
       return;
     }
 
-    var ourOwed = Math.round(ourValidPoints.reduce(function (sum, p) { return sum - p.balance; }, 0) * 100) / 100;
+    var ourOwed = Math.round(ourValidPoints.reduce(function (sum, p) { return sum + p.balance; }, 0) * 100) / 100;
     var bankOwed = Math.round(bankPoint.balance * 100) / 100;
     var diff = Math.round((bankOwed - ourOwed) * 100) / 100;
     var diffAbs = Math.abs(diff);
@@ -551,7 +551,7 @@
       ? '<div style="font-size:12px;color:#999;margin-top:6px;">Our file total is the sum of each file\'s own balance: ' +
         oursFilesRows.map(function (rows, idx) {
           var p = ourPerFile[idx];
-          return p ? (fmt(Math.round(-p.balance * 100) / 100) + ' (as of ' + esc(p.date) + ')') : 'no data in range';
+          return p ? (fmt(Math.round(p.balance * 100) / 100) + ' (as of ' + esc(p.date) + ')') : 'no data in range';
         }).join(' + ') + '</div>'
       : '';
 
