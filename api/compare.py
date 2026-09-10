@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import datetime as dt
 
-BUILD_TAG = "2026-08-27-fix-match-order-day-total-first"
+BUILD_TAG = "2026-09-10-second-day-total-pass"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -224,6 +224,28 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     day_matched_ours, day_matched_bank, o_pool, b_pool = match_by_day_total(ours, bank, o_pool, b_pool)
     exact_cross, date_mm, o_pool, b_pool = match_by_amount(ours, bank, o_pool, b_pool)
     exact = exact + exact_cross
+
+    # SECOND day-total pass, after the cross-date tier. Verified against a
+    # real BLOM file: the FIRST pass's leftover for a given day is often
+    # still full of unrelated individual mismatches (e.g. a transaction
+    # extracted with a wrong amount, or a genuine one-off missing entry),
+    # which swamp that day's net total and hide a real split-settlement
+    # pair sitting right alongside them (seen on real data: a day's total
+    # leftover net was off by tens of thousands even though a $1,219.12
+    # subset - 4 of our card-fee lines vs the bank's 2 sales-voucher lines
+    # - matched exactly to the cent). match_by_amount's cross-date search
+    # picks off many of those unrelated mismatches into date_mismatch or
+    # leaves them correctly stranded, which cleans up each day's leftover
+    # enough for the SAME day-total check to now find the true split
+    # underneath. Re-running the identical function (same date-must-exist-
+    # in-both-pools and net-must-match safeguards - see match_by_day_total)
+    # is safe: it cannot re-open the door to the ordering bug already fixed
+    # above, since match_by_amount has nothing left to steal from these
+    # rows by the time this runs. Confirmed empirically that a third pass
+    # finds nothing further, so two passes reach a fixed point on real data.
+    day_matched_ours2, day_matched_bank2, o_pool, b_pool = match_by_day_total(ours, bank, o_pool, b_pool)
+    day_matched_ours += day_matched_ours2
+    day_matched_bank += day_matched_bank2
 
     matched_rows = [matched_out(ours[i], bank[j]) for i, j in exact]
     issues = []
