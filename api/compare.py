@@ -18,9 +18,10 @@ to match at all.
 
 from http.server import BaseHTTPRequestHandler
 import json
+import re
 import datetime as dt
 
-BUILD_TAG = "2026-09-10-rolling-window-day-total"
+BUILD_TAG = "2026-09-10-ipo-batch-settlement"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -257,6 +258,120 @@ def match_by_day_total_window(ours, bank, ours_pool, bank_pool, window=1):
     return day_matched_ours, day_matched_bank, leftover_ours, leftover_bank
 
 
+IPO_DATE_RE = re.compile(r"IPO/(?:UPP)?(\d{6,8})")
+
+
+def extract_ipo_anchor_date(description):
+    """BLOM's card-network settlement lines carry the batch's real date
+    encoded right in the narrative - e.g. 'IPO/202608030039883' is BLOM's
+    own reference for the 2026-08-03 American Express batch, even though
+    the bank doesn't POST it until a few days later (07/08/2026 value
+    date, on top of that). 'IPO/UPP260826BTAU3I' is the 6-digit YYMMDD
+    variant seen on a different settlement type. Returns that embedded
+    date so a batch can be searched for on OUR side around the date it
+    ACTUALLY happened, rather than guessing blindly from the date the
+    bank happened to post it - this is a much smaller, better-justified
+    search than a plain date window (see match_ipo_batch_settlement)."""
+    m = IPO_DATE_RE.search(description or "")
+    if not m:
+        return None
+    digits = m.group(1)
+    try:
+        if len(digits) == 8:
+            return dt.date(int(digits[0:4]), int(digits[4:6]), int(digits[6:8]))
+        if len(digits) == 6:
+            return dt.date(2000 + int(digits[0:2]), int(digits[2:4]), int(digits[4:6]))
+    except ValueError:
+        return None
+    return None
+
+
+def subset_sum_unique(items, target_cents, cap_ways=2):
+    """0/1 knapsack exact-match, in integer cents to avoid float drift.
+    Returns the matching item indices ONLY if the target is reachable by
+    EXACTLY ONE combination of the given items - if two different subsets
+    both hit the target, that is treated as ambiguous/coincidental and
+    nothing is returned, rather than guessing which one is real. cap_ways
+    just stops the counter growing past what's needed to tell '1' from
+    'more than 1'."""
+    if target_cents <= 0:
+        return None
+    ways = {0: 1}
+    parent = {0: None}
+    for pos, (idx, amt) in enumerate(items):
+        if amt <= 0 or amt > target_cents:
+            continue
+        for s in sorted([s for s in ways if s + amt <= target_cents], reverse=True):
+            new_s = s + amt
+            if ways[s] == 0:
+                continue
+            ways[new_s] = min(ways.get(new_s, 0) + ways[s], cap_ways)
+            if new_s not in parent:
+                parent[new_s] = (pos, s)
+    if ways.get(target_cents, 0) != 1:
+        return None
+    result, s = [], target_cents
+    while s != 0:
+        pos, prev = parent[s]
+        result.append(items[pos][0])
+        s = prev
+    return result
+
+
+def match_ipo_batch_settlement(ours, bank, ours_pool, bank_pool, anchor_window=3):
+    """Last resort, for a card-network settlement that lands as ONE bank
+    line but was split across SEVERAL of our own entries over more than
+    one day (verified on real data: BLOM's Aug 3 Amex batch - reference
+    'IPO/202608030039883' - posted as a single $7,550.40 bank credit on
+    Aug 5, while our side recorded it as 8 separate card-fee lines spread
+    across Aug 1 and Aug 4). match_by_day_total_window's single-day-either-
+    side check can't find this because it spans MORE than one day on our
+    side. Deliberately narrow and low-risk: only bank rows carrying an
+    IPO reference (see extract_ipo_anchor_date) are even attempted, and
+    the search on our side is restricted to a small window around that
+    reference's OWN embedded date - not the bank's posting date. This
+    matters: searching the same amount over a wide window against every
+    kind of leftover row (cash deposits, register settlements, DCC fees)
+    risks a coincidental subset that happens to add up but has nothing to
+    do with the real transaction - confirmed this actually happens on
+    real data (an unrelated bank transfer line coincidentally matched a
+    combination of leftover cash/register entries to the cent). Requiring
+    an IPO reference AND uniqueness (see subset_sum_unique) both need to
+    hold before anything is matched here."""
+    consumed_o, consumed_b = set(), set()
+    matched_ours, matched_bank = [], []
+    for j in bank_pool:
+        anchor = extract_ipo_anchor_date(bank[j]["description"])
+        if not anchor:
+            continue
+        target = round((bank[j]["debit"] - bank[j]["credit"]) * 100)
+        if target == 0:
+            continue
+        candidates = []
+        for i in ours_pool:
+            if i in consumed_o:
+                continue
+            od = _parse_iso_date(ours[i]["date"])
+            if not od or abs((od - anchor).days) > anchor_window:
+                continue
+            candidates.append((i, round((ours[i]["credit"] - ours[i]["debit"]) * 100)))
+        if target < 0:
+            pool = [(i, -c) for i, c in candidates if c < 0]
+            res = subset_sum_unique(pool, -target)
+        else:
+            pool = [(i, c) for i, c in candidates if c > 0]
+            res = subset_sum_unique(pool, target)
+        if res and len(res) >= 2:
+            matched_bank.append(j)
+            matched_ours.extend(res)
+            consumed_b.add(j)
+            consumed_o.update(res)
+
+    leftover_ours = [i for i in ours_pool if i not in consumed_o]
+    leftover_bank = [j for j in bank_pool if j not in consumed_b]
+    return matched_ours, matched_bank, leftover_ours, leftover_bank
+
+
 def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     ours = clean(ours_raw)
     bank = clean(bank_raw)
@@ -305,6 +420,14 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     day_matched_ours3, day_matched_bank3, o_pool, b_pool = match_by_day_total_window(ours, bank, o_pool, b_pool, window=1)
     day_matched_ours += day_matched_ours3
     day_matched_bank += day_matched_bank3
+
+    # FOURTH pass: IPO-referenced card-network batches that split across
+    # more than one day on our side (see match_ipo_batch_settlement's
+    # docstring for the real case this catches and why it's scoped so
+    # narrowly).
+    day_matched_ours4, day_matched_bank4, o_pool, b_pool = match_ipo_batch_settlement(ours, bank, o_pool, b_pool)
+    day_matched_ours += day_matched_ours4
+    day_matched_bank += day_matched_bank4
 
     matched_rows = [matched_out(ours[i], bank[j]) for i, j in exact]
     issues = []
