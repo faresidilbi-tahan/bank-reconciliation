@@ -262,8 +262,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-09-10-expand-grouped-rows -->
-    <button id="compareBtn" disabled data-build="2026-09-10-expand-grouped-rows">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-09-10-group-by-default -->
+    <button id="compareBtn" disabled data-build="2026-09-10-group-by-default">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -289,7 +289,6 @@
     <label><input type="checkbox" class="issueFilter" value="day_total_match" checked> Day total matches</label>
     <label><input type="checkbox" class="issueFilter" value="missing_in_ours" checked> Missing in our file</label>
     <label><input type="checkbox" class="issueFilter" value="missing_in_bank" checked> Missing in bank</label>
-    <label><input type="checkbox" id="groupMissingByDay"> Group missing rows by day</label>
     <div class="filter-actions">
       <button type="button" id="filterAllBtn">All</button>
       <button type="button" id="filterNoneBtn">None</button>
@@ -745,12 +744,13 @@
     var tbody = document.getElementById('tbody');
     tbody.innerHTML = '';
 
-    var displayRows = document.getElementById('groupMissingByDay').checked
-      ? groupMissingByDay(filtered)
-      : filtered.map(function (row) { return { row: row, isGroup: false }; });
+    var displayRows = groupMissingByDay(filtered);
 
     displayRows.forEach(function (item) {
       var tr = document.createElement('tr');
+      if (item.isGroup && item.count === 1) {
+        item = { row: item.rows[0], isGroup: false };
+      }
       if (item.isGroup) {
         var net = item.issue === 'missing_in_bank'
           ? Math.round((item.our_debit - item.our_credit) * 100) / 100
@@ -836,7 +836,6 @@
   document.querySelectorAll('.issueFilter').forEach(function (cb) {
     cb.addEventListener('change', renderIssuesTable);
   });
-  document.getElementById('groupMissingByDay').addEventListener('change', renderIssuesTable);
   document.getElementById('filterAllBtn').addEventListener('click', function () {
     document.querySelectorAll('.issueFilter').forEach(function (cb) { cb.checked = true; });
     renderIssuesTable();
