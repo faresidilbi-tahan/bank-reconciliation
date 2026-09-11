@@ -262,8 +262,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-09-10-group-by-default -->
-    <button id="compareBtn" disabled data-build="2026-09-10-group-by-default">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-09-10-drop-nets-to-zero-note -->
+    <button id="compareBtn" disabled data-build="2026-09-10-drop-nets-to-zero-note">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -752,16 +752,11 @@
         item = { row: item.rows[0], isGroup: false };
       }
       if (item.isGroup) {
-        var net = item.issue === 'missing_in_bank'
-          ? Math.round((item.our_debit - item.our_credit) * 100) / 100
-          : Math.round((item.bank_debit - item.bank_credit) * 100) / 100;
-        var netNote = Math.abs(net) <= 0.01
-          ? ' <span style="color:var(--green);font-weight:600;">— nets to ~0</span>' : '';
         tr.style.cursor = 'pointer';
         tr.innerHTML =
           '<td><span class="badge ' + esc(item.issue) + '">' + (LABELS[item.issue] || esc(item.issue)) + '</span></td>' +
           '<td>' + esc(item.date) + '</td>' +
-          '<td class="desc"><span class="toggle-arrow">▸</span> ' + item.count + ' rows grouped (same day)' + netNote + '</td>' +
+          '<td class="desc"><span class="toggle-arrow">▸</span> ' + item.count + ' rows grouped (same day)</td>' +
           '<td class="num">' + fmt(item.our_debit) + '</td>' +
           '<td class="num">' + fmt(item.our_credit) + '</td>' +
           '<td class="num">' + fmt(item.bank_debit) + '</td>' +
