@@ -189,6 +189,7 @@
   .badge.missing_in_bank { background: #fff3e0; color: var(--amber); }
   .badge.date_mismatch { background: #e3f2fd; color: #1565c0; }
   .badge.day_total_match { background: #e8f5e9; color: #2e7d32; }
+  .badge.self_canceling { background: #f3e5f5; color: #6a1b9a; }
 
   .filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 16px; font-size: 13.5px; color: var(--muted); }
   .filter-row label { display: flex; align-items: center; gap: 6px; }
@@ -262,8 +263,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-09-10-drop-nets-to-zero-note -->
-    <button id="compareBtn" disabled data-build="2026-09-10-drop-nets-to-zero-note">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-09-10-self-canceling-tier -->
+    <button id="compareBtn" disabled data-build="2026-09-10-self-canceling-tier">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -287,6 +288,7 @@
     <span class="filter-label">Show:</span>
     <label><input type="checkbox" class="issueFilter" value="date_mismatch" checked> Date mismatch</label>
     <label><input type="checkbox" class="issueFilter" value="day_total_match" checked> Day total matches</label>
+    <label><input type="checkbox" class="issueFilter" value="self_canceling" checked> Self-canceling</label>
     <label><input type="checkbox" class="issueFilter" value="missing_in_ours" checked> Missing in our file</label>
     <label><input type="checkbox" class="issueFilter" value="missing_in_bank" checked> Missing in bank</label>
     <div class="filter-actions">
@@ -458,9 +460,10 @@
     missing_in_bank: 'Missing in bank',
     missing_in_ours: 'Missing in ours',
     date_mismatch: 'Date mismatch',
-    day_total_match: 'Day total matches'
+    day_total_match: 'Day total matches',
+    self_canceling: 'Self-canceling'
   };
-  var DIFF_KINDS = ['date_mismatch', 'day_total_match'];
+  var DIFF_KINDS = ['date_mismatch', 'day_total_match', 'self_canceling'];
 
   var lastMissingOurs = [];
   var lastMissingBank = [];
@@ -590,11 +593,14 @@
     var dayTotalNote = s.day_total_match > 0
       ? ', ' + s.day_total_match + ' rows resolved as day-total matches <span style="font-weight:400;color:#999;">(different line splitting, same day\'s total)</span>'
       : '';
+    var selfCancelNote = s.self_canceling > 0
+      ? ', ' + s.self_canceling + ' self-canceling <span style="font-weight:400;color:#999;">(same side, nets to zero on its own)</span>'
+      : '';
     summaryEl.innerHTML =
       '<strong>' + s.matched + ' matched, ' +
       s.date_mismatch + ' date mismatch' + (s.date_mismatch === 1 ? '' : 'es') + ', ' +
       s.missing_in_bank + ' missing from bank, ' +
-      s.missing_in_ours + ' missing from our file</strong>' + dayTotalNote +
+      s.missing_in_ours + ' missing from our file</strong>' + dayTotalNote + selfCancelNote +
       ' — ' + s.our_transactions + ' of our transactions vs ' + s.bank_transactions + ' bank rows.' +
       (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '') +
       ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>';
