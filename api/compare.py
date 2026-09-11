@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 import json
 import datetime as dt
 
-BUILD_TAG = "2026-09-10-second-day-total-pass"
+BUILD_TAG = "2026-09-10-rolling-window-day-total"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -207,6 +207,56 @@ def match_by_day_total(ours, bank, ours_pool, bank_pool):
     return day_matched_ours, day_matched_bank, leftover_ours, leftover_bank
 
 
+def match_by_day_total_window(ours, bank, ours_pool, bank_pool, window=1):
+    """Same idea as match_by_day_total, but for the case where the SPLIT
+    settlement lands on adjacent calendar days rather than the identical
+    date - a bank value-dating lag (verified on real data: 5 of our card-
+    fee lines dated Aug 25 summed to exactly the bank's single Aug 26
+    settlement line). Tries each remaining day's net, closest date first
+    (same day, then +/-1, +/-2, ... out to window), against the OTHER
+    side's leftover for that shifted date. Greedy and one-directional
+    (walks our dates in order, matches against bank): once a day's rows
+    are claimed they can't be reused by a different day's window, so this
+    can't double-count. Only ever pulls rows out of missing_in_bank/
+    missing_in_ours into day_total_match, same as match_by_day_total."""
+    ours_by_date, bank_by_date = {}, {}
+    for i in ours_pool:
+        ours_by_date.setdefault(ours[i]["date"], []).append(i)
+    for j in bank_pool:
+        bank_by_date.setdefault(bank[j]["date"], []).append(j)
+
+    consumed_o, consumed_b = set(), set()
+    day_matched_ours, day_matched_bank = [], []
+    offsets = [0] + [sign * k for k in range(1, window + 1) for sign in (-1, 1)]
+
+    for date in sorted(ours_by_date):
+        o_indices = [i for i in ours_by_date[date] if i not in consumed_o]
+        if not o_indices:
+            continue
+        o_net = sum(ours[i]["credit"] - ours[i]["debit"] for i in o_indices)
+        if abs(o_net) <= 0.01:
+            continue
+        d = _parse_iso_date(date)
+        if not d:
+            continue
+        for offset in offsets:
+            b_date = (d + dt.timedelta(days=offset)).isoformat()
+            b_indices = [j for j in bank_by_date.get(b_date, []) if j not in consumed_b]
+            if not b_indices:
+                continue
+            b_net = sum(bank[j]["debit"] - bank[j]["credit"] for j in b_indices)
+            if amounts_close(o_net, b_net):
+                day_matched_ours.extend(o_indices)
+                day_matched_bank.extend(b_indices)
+                consumed_o.update(o_indices)
+                consumed_b.update(b_indices)
+                break
+
+    leftover_ours = [i for i in ours_pool if i not in consumed_o]
+    leftover_bank = [j for j in bank_pool if j not in consumed_b]
+    return day_matched_ours, day_matched_bank, leftover_ours, leftover_bank
+
+
 def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     ours = clean(ours_raw)
     bank = clean(bank_raw)
@@ -246,6 +296,15 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     day_matched_ours2, day_matched_bank2, o_pool, b_pool = match_by_day_total(ours, bank, o_pool, b_pool)
     day_matched_ours += day_matched_ours2
     day_matched_bank += day_matched_bank2
+
+    # THIRD pass: same idea, but allow the split to land on the day before
+    # or after (see match_by_day_total_window's docstring). Confirmed
+    # empirically that window=1 finds everything there is to find on real
+    # data - a second window pass and a window=2 pass both find nothing
+    # further, so this runs once.
+    day_matched_ours3, day_matched_bank3, o_pool, b_pool = match_by_day_total_window(ours, bank, o_pool, b_pool, window=1)
+    day_matched_ours += day_matched_ours3
+    day_matched_bank += day_matched_bank3
 
     matched_rows = [matched_out(ours[i], bank[j]) for i, j in exact]
     issues = []
