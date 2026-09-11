@@ -262,8 +262,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-09-10-group-missing-by-day -->
-    <button id="compareBtn" disabled data-build="2026-09-10-group-missing-by-day">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-09-10-expand-grouped-rows -->
+    <button id="compareBtn" disabled data-build="2026-09-10-expand-grouped-rows">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -722,11 +722,12 @@
       var g = groups[key];
       if (!g) {
         g = { isGroup: true, issue: row.issue, date: row.date, count: 0,
-              our_debit: 0, our_credit: 0, bank_debit: 0, bank_credit: 0 };
+              our_debit: 0, our_credit: 0, bank_debit: 0, bank_credit: 0, rows: [] };
         groups[key] = g;
         order.push(g);
       }
       g.count++;
+      g.rows.push(row);
       g.our_debit = Math.round((g.our_debit + (row.our_debit || 0)) * 100) / 100;
       g.our_credit = Math.round((g.our_credit + (row.our_credit || 0)) * 100) / 100;
       g.bank_debit = Math.round((g.bank_debit + (row.bank_debit || 0)) * 100) / 100;
@@ -756,14 +757,46 @@
           : Math.round((item.bank_debit - item.bank_credit) * 100) / 100;
         var netNote = Math.abs(net) <= 0.01
           ? ' <span style="color:var(--green);font-weight:600;">— nets to ~0</span>' : '';
+        tr.style.cursor = 'pointer';
         tr.innerHTML =
           '<td><span class="badge ' + esc(item.issue) + '">' + (LABELS[item.issue] || esc(item.issue)) + '</span></td>' +
           '<td>' + esc(item.date) + '</td>' +
-          '<td class="desc">' + item.count + ' rows grouped (same day)' + netNote + '</td>' +
+          '<td class="desc"><span class="toggle-arrow">▸</span> ' + item.count + ' rows grouped (same day)' + netNote + '</td>' +
           '<td class="num">' + fmt(item.our_debit) + '</td>' +
           '<td class="num">' + fmt(item.our_credit) + '</td>' +
           '<td class="num">' + fmt(item.bank_debit) + '</td>' +
           '<td class="num">' + fmt(item.bank_credit) + '</td>';
+
+        var expanded = false;
+        var cursorEl = tr;
+        tr.addEventListener('click', function () {
+          expanded = !expanded;
+          tr.querySelector('.toggle-arrow').textContent = expanded ? '▾' : '▸';
+          if (expanded) {
+            cursorEl = tr;
+            item.rows.forEach(function (subRow) {
+              var subTr = document.createElement('tr');
+              subTr.className = 'group-detail-row';
+              subTr.innerHTML =
+                '<td></td>' +
+                '<td>' + esc(subRow.date) + '</td>' +
+                '<td class="desc" style="padding-left:28px;color:#666;">' + esc(subRow.description) + '</td>' +
+                '<td class="num">' + fmt(subRow.our_debit) + '</td>' +
+                '<td class="num">' + fmt(subRow.our_credit) + '</td>' +
+                '<td class="num">' + fmt(subRow.bank_debit) + '</td>' +
+                '<td class="num">' + fmt(subRow.bank_credit) + '</td>';
+              cursorEl.insertAdjacentElement('afterend', subTr);
+              cursorEl = subTr;
+            });
+          } else {
+            var next = tr.nextElementSibling;
+            while (next && next.classList.contains('group-detail-row')) {
+              var toRemove = next;
+              next = next.nextElementSibling;
+              toRemove.remove();
+            }
+          }
+        });
       } else {
         var row = item.row;
         tr.innerHTML =
