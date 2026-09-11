@@ -21,7 +21,7 @@ import json
 import re
 import datetime as dt
 
-BUILD_TAG = "2026-09-10-ipo-batch-settlement"
+BUILD_TAG = "2026-09-10-self-canceling-tier"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -372,6 +372,32 @@ def match_ipo_batch_settlement(ours, bank, ours_pool, bank_pool, anchor_window=3
     return matched_ours, matched_bank, leftover_ours, leftover_bank
 
 
+def match_self_canceling_day(rows, pool):
+    """Rows still leftover on ONE side, same day, whose own debit and
+    credit cancel each other to the cent (verified on real data: an
+    IPO reversal credit and a CRV debit, both ours, both Aug 27, same
+    $1,958.10 - almost certainly a correction posted and reversed the
+    same day, never touching the bank at all). Unlike every other tier
+    above, this needs no counterpart on the OTHER side whatsoever - it's
+    a self-contained check against that side's own numbers, so there's
+    no cross-referencing risk to guard against (contrast with
+    match_ipo_batch_settlement's docstring). Only ever fires once a
+    whole day's leftover on that side already nets to zero on its own."""
+    by_date = {}
+    for i in pool:
+        by_date.setdefault(rows[i]["date"], []).append(i)
+    consumed = []
+    for indices in by_date.values():
+        if len(indices) < 2:
+            continue
+        net = sum(rows[i]["credit"] - rows[i]["debit"] for i in indices)
+        if abs(net) <= 0.01:
+            consumed.extend(indices)
+    consumed_set = set(consumed)
+    leftover = [i for i in pool if i not in consumed_set]
+    return consumed, leftover
+
+
 def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     ours = clean(ours_raw)
     bank = clean(bank_raw)
@@ -429,6 +455,12 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     day_matched_ours += day_matched_ours4
     day_matched_bank += day_matched_bank4
 
+    # FIFTH and last: same-side self-canceling rows (see
+    # match_self_canceling_day's docstring). Run independently per side -
+    # this needs no cross-referencing at all.
+    self_cancel_ours, o_pool = match_self_canceling_day(ours, o_pool)
+    self_cancel_bank, b_pool = match_self_canceling_day(bank, b_pool)
+
     matched_rows = [matched_out(ours[i], bank[j]) for i, j in exact]
     issues = []
     for i, j in date_mm:
@@ -437,6 +469,10 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
         issues.append(row_out("day_total_match", ours[i], None))
     for j in day_matched_bank:
         issues.append(row_out("day_total_match", None, bank[j]))
+    for i in self_cancel_ours:
+        issues.append(row_out("self_canceling", ours[i], None))
+    for j in self_cancel_bank:
+        issues.append(row_out("self_canceling", None, bank[j]))
     for i in o_pool:
         issues.append(row_out("missing_in_bank", ours[i], None))
     for j in b_pool:
@@ -521,6 +557,7 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
         "matched": len(exact),
         "date_mismatch": len(date_mm),
         "day_total_match": len(day_matched_ours) + len(day_matched_bank),
+        "self_canceling": len(self_cancel_ours) + len(self_cancel_bank),
         "missing_in_bank": len(o_pool),
         "missing_in_ours": len(b_pool),
         "our_date_range": list(our_range) if our_range else None,
