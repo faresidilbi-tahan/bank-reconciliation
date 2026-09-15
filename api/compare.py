@@ -21,7 +21,7 @@ import json
 import re
 import datetime as dt
 
-BUILD_TAG = "2026-09-10-directional-subset-sum"
+BUILD_TAG = "2026-09-10-day-aggregate-subset-sum"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -398,6 +398,61 @@ def match_self_canceling_day(rows, pool):
     return consumed, leftover
 
 
+def match_by_day_aggregate_subset_sum(ours, bank, ours_pool, bank_pool, max_candidates=40):
+    """Same validated direction as match_bank_single_vs_ours_subset (one
+    bank line explained by several of our own) and same exact-match,
+    uniqueness-checked machinery, but the CANDIDATE UNIT is a whole
+    calendar day's leftover total on our side, not an individual line.
+    This exists because per-line subset-sum is only safe when the
+    number of leftover lines is small - on a real BLC Bank USD account
+    with dozens of small card-fee lines per day, a several-day window
+    still pulls in 40-70 individual candidates, well past any size cap
+    that's safe to trust (see match_bank_single_vs_ours_subset's
+    docstring for what happens when that's ignored). But the number of
+    distinct CALENDAR DATES in a leftover pool is naturally small
+    (at most ~31 for a monthly statement) regardless of how many lines
+    fall on each one, so aggregating first and searching THAT small set
+    is safe by the same size-based logic without needing any window at
+    all. Verified on real data: correctly reproduces the same match
+    match_bank_single_vs_ours_subset found per-line on a BLC Bank LBP
+    statement (two of our posting dates, one bank settlement line), and
+    additionally resolves five settlement lines on a BLC Bank USD
+    statement that plain per-line search couldn't even attempt because
+    its leftover pool was too large. Correctly finds nothing at all on
+    BLOM, where day totals don't cleanly explain any leftover bank line
+    - it doesn't force a match where none genuinely exists."""
+    consumed_o_days, consumed_b = set(), set()
+    matched_ours, matched_bank = [], []
+    ours_by_date = {}
+    for i in ours_pool:
+        ours_by_date.setdefault(ours[i]["date"], []).append(i)
+    if len(ours_by_date) > max_candidates:
+        return [], [], ours_pool, bank_pool
+    for j in sorted(bank_pool, key=lambda j: bank[j]["date"]):
+        if j in consumed_b:
+            continue
+        target = round((bank[j]["debit"] - bank[j]["credit"]) * 100)
+        if target == 0:
+            continue
+        candidates = [(d, round(sum(ours[i]["credit"] - ours[i]["debit"] for i in idxs) * 100))
+                      for d, idxs in ours_by_date.items() if d not in consumed_o_days]
+        if target < 0:
+            pool = [(d, -c) for d, c in candidates if c < 0]
+            res = subset_sum_unique(pool, -target)
+        else:
+            pool = [(d, c) for d, c in candidates if c > 0]
+            res = subset_sum_unique(pool, target)
+        if res:
+            matched_bank.append(j)
+            for d in res:
+                matched_ours.extend(ours_by_date[d])
+                consumed_o_days.add(d)
+            consumed_b.add(j)
+    leftover_ours = [i for i in ours_pool if ours[i]["date"] not in consumed_o_days]
+    leftover_bank = [j for j in bank_pool if j not in consumed_b]
+    return matched_ours, matched_bank, leftover_ours, leftover_bank
+
+
 def match_bank_single_vs_ours_subset(ours, bank, ours_pool, bank_pool, max_candidates=15):
     """General (non-anchored) subset-sum matching, but in only ONE
     direction and gated on pool size - both restrictions earned the hard
@@ -502,14 +557,23 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     day_matched_ours += day_matched_ours4
     day_matched_bank += day_matched_bank4
 
-    # FIFTH: general small-pool subset-sum, one direction only (see
-    # match_bank_single_vs_ours_subset's docstring for why the other
-    # direction is deliberately never attempted).
-    day_matched_ours5, day_matched_bank5, o_pool, b_pool = match_bank_single_vs_ours_subset(ours, bank, o_pool, b_pool)
+    # FIFTH: day-aggregate subset-sum, tried first since it's the safer
+    # of the two general (non-anchored) approaches (see
+    # match_by_day_aggregate_subset_sum's docstring).
+    day_matched_ours5, day_matched_bank5, o_pool, b_pool = match_by_day_aggregate_subset_sum(ours, bank, o_pool, b_pool)
     day_matched_ours += day_matched_ours5
     day_matched_bank += day_matched_bank5
 
-    # SIXTH and last: same-side self-canceling rows (see
+    # SIXTH: per-line subset-sum, one direction only, for whatever the
+    # day-aggregate pass above couldn't explain because a day's total
+    # was itself polluted by an unrelated leftover line (see
+    # match_bank_single_vs_ours_subset's docstring for why the other
+    # direction is deliberately never attempted).
+    day_matched_ours6, day_matched_bank6, o_pool, b_pool = match_bank_single_vs_ours_subset(ours, bank, o_pool, b_pool)
+    day_matched_ours += day_matched_ours6
+    day_matched_bank += day_matched_bank6
+
+    # SEVENTH and last: same-side self-canceling rows (see
     # match_self_canceling_day's docstring). Run independently per side -
     # this needs no cross-referencing at all.
     self_cancel_ours, o_pool = match_self_canceling_day(ours, o_pool)
