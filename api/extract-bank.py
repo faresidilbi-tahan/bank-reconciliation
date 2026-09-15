@@ -44,7 +44,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-08-27-pending-marker-not-always-stop"
+BUILD_TAG = "2026-09-10-blc-format-support"
 
 # "amount" is new here vs the supplier parser - a single signed column
 # instead of separate debit/credit. "id" here means whatever reference
@@ -91,6 +91,18 @@ REPORT_TIMESTAMP_RE = re.compile(
     r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\s*,\s*\d{1,2}:\d{2}\b",
     re.IGNORECASE)
 
+# A statement's trailing totals/summary block ("Number of transactions
+# 37", "Total DR ...", "Average Balance ...") sits in a completely
+# different, label-then-value shape that doesn't align with the main
+# table's columns at all - verified on a real BLC Bank statement, where
+# without this, "Total DR 1,896,100,000.00" and similar summary lines
+# got sliced by the transaction table's column positions and emitted as
+# phantom transactions with garbage dates and descriptions. Once seen,
+# nothing after it is ever real transaction data.
+STATEMENT_SUMMARY_RE = re.compile(
+    r"number\s+of\s+transactions|total\s+dr\b|total\s+cr\b|average\s+balance",
+    re.IGNORECASE)
+
 AMOUNT_RE = re.compile(r"^\(?-?(?:[\d,]+(?:\.\d+)?|\.\d+)\)?(CR|DR|DB)?$", re.IGNORECASE)
 NUM_DATE_RE = re.compile(r"(\d{1,4})\s*[/\-.]\s*(\d{1,2})\s*[/\-.]\s*(\d{1,4})")
 # "Month Day, Year" (American-style, e.g. "Jul 12, 2026")
@@ -101,9 +113,14 @@ MONTH_DAY_YEAR_RE = re.compile(
 # a genuinely different word order from the above, not just a formatting
 # variant - seen for real on a BankMed statement where every date was
 # written this way and the American-style pattern alone matched nothing
-# at all, silently leaving every transaction dateless.
+# at all, silently leaving every transaction dateless. Separator between
+# the parts can be whitespace OR a hyphen ("01-Aug-2026", seen for real
+# on a BLC Bank statement) - a hyphen-only variant slipped straight past
+# NUM_DATE_RE too, since that pattern requires a NUMBER in the middle
+# group, not a month name, so this format needs its own explicit match
+# rather than falling back to either of the other two patterns.
 DAY_MONTH_YEAR_RE = re.compile(
-    r"(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*,?\s+(\d{4})",
+    r"(\d{1,2})[\s\-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s\-]*,?\s*(\d{4})",
     re.IGNORECASE)
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
@@ -142,11 +159,35 @@ def parse_amount_cell(raw_cell):
     if val is not None:
         return val
     parts = raw_cell.split()
-    while parts and re.fullmatch(r"[A-Za-z]{2,3}", parts[-1]):
-        parts = parts[:-1]
-    if not parts:
+    trimmed = list(parts)
+    while trimmed and re.fullmatch(r"[A-Za-z]{2,3}", trimmed[-1]):
+        trimmed = trimmed[:-1]
+    candidates = trimmed if trimmed else parts
+    valid = [(tok, parse_amount(tok)) for tok in candidates]
+    valid = [(tok, v) for tok, v in valid if v is not None]
+    if not valid:
         return None
-    return parse_amount(parts[-1])
+    if len(valid) == 1:
+        return valid[0][1]
+    # More than one token in the cell parses as a standalone amount -
+    # contamination from an unrelated column bled in. Verified on the
+    # SAME real BLC Bank statement in two different, opposite-direction
+    # ways: (1) a Balance cell picked up a trailing reference/check-part
+    # number from an unmapped column to the RIGHT ("108,888,243.00
+    # 06-Aug-2026 99-...118126 02181350" - the real balance is first,
+    # the ID number trails it), and (2) a Debit cell picked up a stray
+    # "1" from an over-long narrative ("BRANCH 1") overflowing past its
+    # column boundary from the LEFT ("BRANCH 1 545,000,000.00" - the
+    # real amount is LAST there instead). Neither "always take the
+    # first token" nor "always take the last" handles both. What's
+    # actually true in both cases: a REAL amount in this format always
+    # carries a decimal point (".00"), while a stray ID/reference/
+    # fragment number essentially never does - so prefer whichever
+    # candidate has one.
+    decimals = [v for tok, v in valid if "." in tok]
+    if decimals:
+        return decimals[-1]
+    return valid[-1][1]
 
 
 _DATE_CONVENTION = "DMY"
@@ -308,7 +349,13 @@ def find_header(lines):
     the actual transaction date; "Value Date" is a secondary settlement
     date this project has no use for and would otherwise be picked
     instead, since a generic scan has no way to prefer one "Date" over
-    another."""
+    another. Returns (anchors, line_index) so the caller can skip
+    everything up to and including the header line itself - see
+    parse_words_strategy's docstring note on page chrome above the
+    header (verified on a real BLC Bank export: a page timestamp line
+    sitting above the header, "9/3/26, 10:16 AM", got column-sliced as
+    if it were a transaction row purely by X position, producing a
+    phantom row dated 2026-03-09 with garbage everywhere else)."""
     best, best_count, best_idx = None, 0, None
     for idx, line in enumerate(lines):
         cols = {}
@@ -320,7 +367,7 @@ def find_header(lines):
             if len(cols) > best_count:
                 best, best_count, best_idx = cols, len(cols), idx
     if best is None:
-        return None
+        return None, None
 
     for offset in (0, -1, 1):
         check_idx = best_idx + offset
@@ -328,8 +375,8 @@ def find_header(lines):
             for w in lines[check_idx]:
                 if w["text"].strip().lower() == "business":
                     best["date"] = (w["x0"] + w["x1"]) / 2.0
-                    return best
-    return best
+                    return best, best_idx
+    return best, best_idx
 
 
 def build_intervals(anchors, page_width):
@@ -447,9 +494,17 @@ def parse_words_strategy(pdf):
             if PENDING_SECTION_RE.search(" ".join(w["text"] for w in line)):
                 header_scan_lines = lines[:li]
                 break
-        page_anchors = find_header(header_scan_lines)
+        page_anchors, page_header_idx = find_header(header_scan_lines)
         if page_anchors:
             anchors = page_anchors
+            # Only trim past the header on THIS page, where we actually
+            # know its position - a continuation page with no header row
+            # of its own (anchors carried over from a previous page) has
+            # nothing to trim. Trimming BEFORE stitching, not after: line
+            # indices shift once stitch_wrapped_negative_amounts merges
+            # lines together, so filtering by a pre-stitch index against
+            # the post-stitch list would line up with the wrong rows.
+            lines = lines[page_header_idx + 1:]
         if not anchors:
             continue
         intervals = build_intervals(anchors, page.width)
@@ -464,6 +519,10 @@ def parse_words_strategy(pdf):
             if not raw:
                 continue
             raw_low = raw.lower()
+
+            if STATEMENT_SUMMARY_RE.search(raw_low):
+                seen_pending = True
+                break
 
             if PENDING_SECTION_RE.search(raw_low):
                 # Some banks use this purely as a section header with a
