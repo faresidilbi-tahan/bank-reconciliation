@@ -21,7 +21,7 @@ import json
 import re
 import datetime as dt
 
-BUILD_TAG = "2026-09-10-self-canceling-tier"
+BUILD_TAG = "2026-09-10-directional-subset-sum"
 
 AMOUNT_TOLERANCE = 0.01  # exact to the cent - only float rounding is absorbed, nothing more
 
@@ -398,6 +398,53 @@ def match_self_canceling_day(rows, pool):
     return consumed, leftover
 
 
+def match_bank_single_vs_ours_subset(ours, bank, ours_pool, bank_pool, max_candidates=15):
+    """General (non-anchored) subset-sum matching, but in only ONE
+    direction and gated on pool size - both restrictions earned the hard
+    way. Every genuine multi-line settlement pattern found on TWO real
+    bank statements so far (the BLOM AMEX batch, the ordinary day-total
+    tier, and a BLC Bank "SETTL POS" settlement) goes the same direction:
+    ONE bank line represents SEVERAL of our own lines added together -
+    the bank aggregates, we record the disaggregated components. A first
+    version of this also tried the REVERSE direction (one of our lines
+    explained by a combination of bank lines) and it immediately
+    produced a real false match on the BLOM file: a card-fee debit on
+    our side coincidentally summed to a combination of unrelated
+    "Sales Vouchers" bank credits - numerically unique, completely wrong
+    in reality. That direction has never once been a genuine pattern, so
+    it's dropped entirely rather than guarded some other way. Pool size
+    is still gated the same as before (see the removed
+    match_by_subset_sum_small_pool's history for why): only runs when
+    the number of our own candidate lines is small enough that an exact
+    coincidental sum is implausible."""
+    consumed_o, consumed_b = set(), set()
+    matched_ours, matched_bank = [], []
+    if len(ours_pool) > max_candidates:
+        return [], [], ours_pool, bank_pool
+    for j in sorted(bank_pool, key=lambda j: bank[j]["date"]):
+        if j in consumed_b:
+            continue
+        target = round((bank[j]["debit"] - bank[j]["credit"]) * 100)
+        if target == 0:
+            continue
+        candidates = [(i, round((ours[i]["credit"] - ours[i]["debit"]) * 100))
+                      for i in ours_pool if i not in consumed_o]
+        if target < 0:
+            pool = [(i, -c) for i, c in candidates if c < 0]
+            res = subset_sum_unique(pool, -target)
+        else:
+            pool = [(i, c) for i, c in candidates if c > 0]
+            res = subset_sum_unique(pool, target)
+        if res and len(res) >= 2:
+            matched_bank.append(j)
+            matched_ours.extend(res)
+            consumed_b.add(j)
+            consumed_o.update(res)
+    leftover_ours = [i for i in ours_pool if i not in consumed_o]
+    leftover_bank = [j for j in bank_pool if j not in consumed_b]
+    return matched_ours, matched_bank, leftover_ours, leftover_bank
+
+
 def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     ours = clean(ours_raw)
     bank = clean(bank_raw)
@@ -455,7 +502,14 @@ def compare(ours_raw, bank_raw, bank_pre_range_balance=None):
     day_matched_ours += day_matched_ours4
     day_matched_bank += day_matched_bank4
 
-    # FIFTH and last: same-side self-canceling rows (see
+    # FIFTH: general small-pool subset-sum, one direction only (see
+    # match_bank_single_vs_ours_subset's docstring for why the other
+    # direction is deliberately never attempted).
+    day_matched_ours5, day_matched_bank5, o_pool, b_pool = match_bank_single_vs_ours_subset(ours, bank, o_pool, b_pool)
+    day_matched_ours += day_matched_ours5
+    day_matched_bank += day_matched_bank5
+
+    # SIXTH and last: same-side self-canceling rows (see
     # match_self_canceling_day's docstring). Run independently per side -
     # this needs no cross-referencing at all.
     self_cancel_ours, o_pool = match_self_canceling_day(ours, o_pool)
