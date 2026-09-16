@@ -253,8 +253,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-09-10-remove-warnings-box -->
-    <button id="compareBtn" disabled data-build="2026-09-10-remove-warnings-box">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-09-10-summary-total-resolved -->
+    <button id="compareBtn" disabled data-build="2026-09-10-summary-total-resolved">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -579,17 +579,18 @@
 
     var summaryEl = document.getElementById('summary');
     summaryEl.style.display = 'block';
+    var totalResolved = s.matched + s.day_total_match + s.self_canceling;
     var dayTotalNote = s.day_total_match > 0
-      ? ', ' + s.day_total_match + ' rows resolved as day-total matches <span style="font-weight:400;color:#999;">(different line splitting, same day\'s total)</span>'
+      ? ', ' + s.day_total_match + ' as day-total matches <span style="font-weight:400;color:#999;">(different line splitting, same day\'s total)</span>'
       : '';
     var selfCancelNote = s.self_canceling > 0
       ? ', ' + s.self_canceling + ' self-canceling <span style="font-weight:400;color:#999;">(same side, nets to zero on its own)</span>'
       : '';
     summaryEl.innerHTML =
-      '<strong>' + s.matched + ' matched, ' +
+      '<strong>' + totalResolved + ' resolved (' + s.matched + ' exact match' + (s.matched === 1 ? '' : 'es') + dayTotalNote + selfCancelNote + '), ' +
       s.date_mismatch + ' date mismatch' + (s.date_mismatch === 1 ? '' : 'es') + ', ' +
       s.missing_in_bank + ' missing from bank, ' +
-      s.missing_in_ours + ' missing from our file</strong>' + dayTotalNote + selfCancelNote +
+      s.missing_in_ours + ' missing from our file</strong>' +
       ' — ' + s.our_transactions + ' of our transactions vs ' + s.bank_transactions + ' bank rows.' +
       (s.our_date_range ? ' Our file covers ' + s.our_date_range[0] + ' to ' + s.our_date_range[1] + '.' : '') +
       ' <span style="color:#999;font-size:11px;">[build ' + (s.build_tag || 'unknown') + ']</span>';
