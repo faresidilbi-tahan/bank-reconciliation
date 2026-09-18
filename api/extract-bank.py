@@ -44,7 +44,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-09-18-lgb-format-support"
+BUILD_TAG = "2026-09-18-stitch-wrapped-decimals"
 
 # "amount" is new here vs the supplier parser - a single signed column
 # instead of separate debit/credit. "id" here means whatever reference
@@ -70,7 +70,7 @@ CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "ending balance",
                  "اجمالي", "إجمالي", "المجموع", "ختامي", "نهائي")
 SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
               "p.o.box", "www.", "@", "written report", "is considered accurate",
-              "any concerns")
+              "any concerns", "amount debited", "disputed debit")
 
 # Once seen, everything after is trailing metadata, never a real
 # transaction - a "Pending Transactions" section on a real BLOM Bank
@@ -419,6 +419,71 @@ def build_intervals(anchors, page_width):
     return intervals
 
 
+COMPLETE_AMOUNT_RE = re.compile(r"^-?\(?\d{1,3}(,\d{3})*\.\d{2}\)?(CR|DR|DB)?$", re.IGNORECASE)
+FRAGMENT_TAIL_RE = re.compile(r"^[\d,.]+\)?$")
+NUMERIC_WRAP_COLUMNS = ("debit", "credit", "balance", "amount")
+
+
+def stitch_wrapped_decimal_amounts(lines, intervals):
+    """An amount too wide for its column sometimes wraps mid-number,
+    pushing the tail end onto its own tiny line right underneath -
+    verified on a real BLOM Bank LBP statement, and NOT always at the
+    same split point: "2,684,000." wraps with "00" on the next line
+    (split right at the decimal point), "195,000.0" wraps with just "0"
+    (split one digit into the decimals), and "10,025,00" wraps with
+    "0.00" (split entirely BEFORE the decimal point, mid-way through
+    the thousands grouping). Matching each split shape with its own
+    pattern doesn't generalize - there could be others not yet seen.
+    Instead this checks the OUTCOME: is the token a complete, properly
+    formatted amount (proper 3-digit comma grouping, exactly 2 decimal
+    places) or not? If not, and the next line has a plausible digit/
+    comma/dot fragment in that SAME column, concatenate them and check
+    whether THAT forms a complete amount - regardless of where the
+    split actually fell. If concatenating doesn't produce a valid
+    amount, nothing is changed, so a wrong guess can't make the
+    original value any more broken than it already was."""
+    numeric_ranges = [(c, l, r) for c, l, r in intervals if c in NUMERIC_WRAP_COLUMNS]
+    if not numeric_ranges:
+        return lines
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        merged_line = list(line)
+        consumed_next_fully = False
+        if i + 1 < len(lines):
+            nxt = lines[i + 1]
+            for col, lo, hi in numeric_ranges:
+                trunc_words = [w for w in merged_line
+                               if not COMPLETE_AMOUNT_RE.match(w["text"].strip())
+                               and re.search(r"\d", w["text"])
+                               and lo <= (w["x0"] + w["x1"]) / 2 < hi]
+                if not trunc_words:
+                    continue
+                trunc_word = trunc_words[0]
+                frag_words = [w for w in nxt
+                              if FRAGMENT_TAIL_RE.match(w["text"].strip())
+                              and lo <= (w["x0"] + w["x1"]) / 2 < hi]
+                if not frag_words:
+                    continue
+                frag_word = frag_words[0]
+                candidate_text = trunc_word["text"] + frag_word["text"]
+                if not COMPLETE_AMOUNT_RE.match(candidate_text):
+                    continue
+                merged = dict(trunc_word)
+                merged["text"] = candidate_text
+                merged_line = [w for w in merged_line if w is not trunc_word] + [merged]
+                remainder = [w for w in nxt if w is not frag_word]
+                if remainder:
+                    lines[i + 1] = remainder
+                else:
+                    consumed_next_fully = True
+                break
+        out.append(sorted(merged_line, key=lambda w: w["x0"]))
+        i += 2 if consumed_next_fully else 1
+    return out
+
+
 def assign_columns(line, intervals):
     cells = {col: [] for col, _, _ in intervals}
     for w in line:
@@ -539,6 +604,7 @@ def parse_words_strategy(pdf):
             continue
         intervals = build_intervals(anchors, page.width)
         lines = stitch_wrapped_negative_amounts(lines, intervals)
+        lines = stitch_wrapped_decimal_amounts(lines, intervals)
 
         prev_was_data = False
         prev_date = ""
