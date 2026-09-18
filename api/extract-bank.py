@@ -44,7 +44,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-09-10-blc-format-support"
+BUILD_TAG = "2026-09-18-lgb-format-support"
 
 # "amount" is new here vs the supplier parser - a single signed column
 # instead of separate debit/credit. "id" here means whatever reference
@@ -69,7 +69,8 @@ CLOSING_WORDS = ("closing", "c/f", "c.f", "carried", "ending balance",
                  "end date", "balance as at",
                  "اجمالي", "إجمالي", "المجموع", "ختامي", "نهائي")
 SKIP_WORDS = ("statement", "page ", "page:", "printed", "tel:", "fax:",
-              "p.o.box", "www.", "@")
+              "p.o.box", "www.", "@", "written report", "is considered accurate",
+              "any concerns")
 
 # Once seen, everything after is trailing metadata, never a real
 # transaction - a "Pending Transactions" section on a real BLOM Bank
@@ -340,6 +341,9 @@ def group_lines(page):
     return lines
 
 
+NUMERIC_COLUMNS = {"debit", "credit", "balance", "amount"}
+
+
 def find_header(lines):
     """Same general keyword-anchor approach as the supplier parser, plus
     one bank-specific override: if a word literally reading "Business"
@@ -355,14 +359,40 @@ def find_header(lines):
     header (verified on a real BLC Bank export: a page timestamp line
     sitting above the header, "9/3/26, 10:16 AM", got column-sliced as
     if it were a transaction row purely by X position, producing a
-    phantom row dated 2026-03-09 with garbage everywhere else)."""
+    phantom row dated 2026-03-09 with garbage everywhere else).
+
+    A second header word matching an ALREADY-claimed column (most often
+    a second "Date", for the same "Value Date" reason as above) gets its
+    OWN spare anchor rather than being dropped. Verified on a real LGB
+    Bank statement why dropping it is wrong: with nothing anchoring that
+    "Value Date" region, it has nowhere to go once intervals are built
+    (see build_intervals) and gets swallowed by whichever REAL column's
+    interval happens to reach it.
+
+    Numeric columns (debit/credit/balance/amount) are anchored by their
+    header's RIGHT edge, not its center - text columns keep using
+    center. Also verified on that same LGB statement: even after giving
+    Value Date its own anchor, the real Debit figure still landed one
+    column over, in Credit - because the number right-aligns to a wide
+    column, while its header label sits further left, so the label's
+    CENTER sat well short of where the actual value fell. A header
+    label's right edge lines up with where right-aligned data
+    converges far more reliably than its center does; there was no
+    equivalent problem for Date or Description, which are left-aligned
+    and start close to where their header text starts."""
     best, best_count, best_idx = None, 0, None
     for idx, line in enumerate(lines):
         cols = {}
+        spare_n = 0
         for w in line:
             col = match_column(w["text"])
-            if col and col not in cols:
-                cols[col] = (w["x0"] + w["x1"]) / 2.0
+            if not col:
+                continue
+            if col in cols:
+                spare_n += 1
+                col = "spare_%d" % spare_n
+            pos = w["x1"] if col in NUMERIC_COLUMNS else (w["x0"] + w["x1"]) / 2.0
+            cols[col] = pos
         if len(cols) >= 3 and any(c in cols for c in ("debit", "credit", "balance", "amount")):
             if len(cols) > best_count:
                 best, best_count, best_idx = cols, len(cols), idx
