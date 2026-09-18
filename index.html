@@ -253,8 +253,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-09-10-summary-total-resolved -->
-    <button id="compareBtn" disabled data-build="2026-09-10-summary-total-resolved">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-09-18-fix-same-day-asof-order -->
+    <button id="compareBtn" disabled data-build="2026-09-18-fix-same-day-asof-order">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -484,14 +484,48 @@
       '</table>';
   }
 
+  function round2(x) { return Math.round(x * 100) / 100; }
+
+  function trueLastAmongSameDate(rows) {
+    // Same calendar date, multiple rows: which one is chronologically
+    // LAST can't be read off array order alone - verified on a real LGB
+    // Bank statement that lists a single day's transactions in REVERSE
+    // order (closing balance first, opening balance last), the opposite
+    // of every other file seen so far. Instead, reconstruct order from
+    // the numbers themselves: for each row, compute what its OWN
+    // balance would have been immediately before its OWN transaction
+    // (i.e. undo it) - if that undone value matches some OTHER row's
+    // actual balance, that other row comes right before this one. A row
+    // has a successor within the set if ITS balance is what some OTHER
+    // row's undo equals; the one row nobody's undo points to is the
+    // true last transaction of the day. The ledger might be
+    // debit-normal or credit-normal (varies between "ours" and "bank"
+    // files, even between different banks), so try both directions and
+    // use whichever gives exactly one unambiguous answer.
+    function findLast(creditNormal) {
+      var predecessorBalances = rows.map(function (s) {
+        var pb = creditNormal ? (s.balance + s.debit - s.credit) : (s.balance - s.debit + s.credit);
+        return round2(pb);
+      });
+      var candidates = rows.filter(function (r, idx) {
+        var rBal = round2(r.balance);
+        var hasSuccessor = predecessorBalances.some(function (pb, j) { return j !== idx && pb === rBal; });
+        return !hasSuccessor;
+      });
+      return candidates.length === 1 ? candidates[0] : null;
+    }
+    return findLast(true) || findLast(false) || rows[rows.length - 1];
+  }
+
   function findAsOfBalance(rows, asOfDate) {
     var candidates = rows.filter(function (r) {
       return r.row_type === 'transaction' && r.date && r.balance !== undefined && r.balance !== null &&
         (!asOfDate || r.date <= asOfDate);
     });
     if (!candidates.length) return null;
-    candidates.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
-    var last = candidates[candidates.length - 1];
+    var maxDate = candidates.reduce(function (m, r) { return r.date > m ? r.date : m; }, candidates[0].date);
+    var sameDate = candidates.filter(function (r) { return r.date === maxDate; });
+    var last = sameDate.length === 1 ? sameDate[0] : trueLastAmongSameDate(sameDate);
     return { balance: last.balance, date: last.date };
   }
 
