@@ -18,7 +18,19 @@ import re
 # pdfplumber extracts right-to-left (Arabic/Hebrew) text runs in reversed
 # character order - this restores correct reading order for just those
 # runs, leaving any interleaved English/numbers/punctuation untouched.
-ARABIC_RUN_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F][\u0600-\u06FF\u0750-\u077F\s]*[\u0600-\u06FF\u0750-\u077F]|[\u0600-\u06FF\u0750-\u077F]")
+# Covers both standard Arabic (\u0600-\u06FF, \u0750-\u077F) and Arabic
+# Presentation Forms A/B (\uFB50-\uFDFF, \uFE70-\uFEFF) - verified on a
+# real BLOM statement where a description's Arabic came through entirely
+# in presentation-form glyphs (pre-shaped per-position variants a PDF
+# embeds instead of the plain joining characters), which the original
+# range never matched at all, so that text silently stayed reversed and
+# unreadable while every other Arabic description in the same file,
+# encoded in the standard block, was already being fixed correctly.
+ARABIC_RUN_RE = re.compile(
+    r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]"
+    r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF\s]*"
+    r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]"
+    r"|[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
 
 
 def fix_bidi_text(text):
@@ -27,7 +39,7 @@ def fix_bidi_text(text):
 
 import pdfplumber
 
-BUILD_TAG = "2026-08-26-2letter-type-code"
+BUILD_TAG = "2026-09-22-fix-arabic-presentation-forms"
 
 DATE_RE = re.compile(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$")
 COBR_RE = re.compile(r"^([A-Za-z]{2})(\d{2})$")
