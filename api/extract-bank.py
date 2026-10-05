@@ -44,7 +44,7 @@ import datetime as dt
 import pdfplumber
 import openpyxl
 
-BUILD_TAG = "2026-09-18-stitch-wrapped-decimals"
+BUILD_TAG = "2026-10-05-xls-support"
 
 # "amount" is new here vs the supplier parser - a single signed column
 # instead of separate debit/credit. "id" here means whatever reference
@@ -54,7 +54,7 @@ BUILD_TAG = "2026-09-18-stitch-wrapped-decimals"
 COLUMN_KEYWORDS = {
     "date": ["date", "invc", "تاريخ", "التاريخ"],
     "id": ["ref", "reference", "transaction ref", "trx", "cheque", "check",
-           "chq", "voucher", "no", "number", "رقم", "مرجع"],
+           "chq", "voucher", "no", "number", "id", "رقم", "مرجع"],
     "description": ["narrative", "description", "details", "particulars",
                     "memo", "remarks", "بيان", "البيان", "التفاصيل", "الوصف"],
     "amount": ["amount", "مبلغ", "المبلغ"],
@@ -119,9 +119,12 @@ MONTH_DAY_YEAR_RE = re.compile(
 # on a BLC Bank statement) - a hyphen-only variant slipped straight past
 # NUM_DATE_RE too, since that pattern requires a NUMBER in the middle
 # group, not a month name, so this format needs its own explicit match
-# rather than falling back to either of the other two patterns.
+# rather than falling back to either of the other two patterns. A slash
+# works the same way ("30/Sep/2026", seen for real as the Transaction
+# Date column of a BLC Bank "Export To Excel" file, where every date
+# silently came out blank without it).
 DAY_MONTH_YEAR_RE = re.compile(
-    r"(\d{1,2})[\s\-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s\-]*,?\s*(\d{4})",
+    r"(\d{1,2})[\s\-/]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s\-/]*,?\s*(\d{4})",
     re.IGNORECASE)
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
           "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
@@ -766,8 +769,9 @@ def parse_pdf(file_bytes):
         total_chars = sum(len(p.chars) for p in pdf.pages)
         if total_chars < 20:
             raise ValueError(
-                "This PDF has no text layer (it is a scan/image). "
-                "It needs OCR before it can be parsed without an LLM."
+                "This PDF has no text layer (it is a scan/image), so there is "
+                "nothing to read. Export the statement from the bank's site "
+                "as Excel (.xls/.xlsx) or CSV instead and upload that."
             )
         full_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
         _DATE_CONVENTION = detect_date_convention(full_text)
@@ -817,14 +821,23 @@ def build_sheet_row(row_values, mapped):
     return build_row(cells, raw_low), cells
 
 
-def parse_xlsx(file_bytes):
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+def parse_sheets(sheets, label):
+    """Shared row-extraction for every spreadsheet format. `sheets` is a
+    list of (sheet_name, list_of_row_tuples) - how the rows got read
+    (openpyxl for .xlsx, xlrd for legacy .xls) is the caller's concern,
+    so both formats go through exactly the same header detection,
+    pending-section cutoff, and row-building."""
+    global _DATE_CONVENTION
     rows, warnings = [], []
     sheets_used = 0
 
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        all_rows = list(ws.iter_rows(values_only=True))
+    # Same day-vs-month order detection the CSV path does: dates stored as
+    # text ("03/08/2026") are ambiguous, and without this a previous
+    # request's setting would silently carry over on a warm server.
+    _DATE_CONVENTION = detect_date_convention(
+        " ".join(cell_to_text(v) for _, grid in sheets for r in grid for v in r if v is not None))
+
+    for sheet_name, all_rows in sheets:
         if not all_rows:
             continue
 
@@ -843,7 +856,7 @@ def parse_xlsx(file_bytes):
         for r in all_rows[header_idx + 1:]:
             if seen_pending:
                 break
-            if r is None or all(v is None for v in r):
+            if r is None or all(v is None or str(v).strip() == "" for v in r):
                 continue
             row_text = " ".join(cell_to_text(v) for v in r if v is not None).lower()
             if PENDING_SECTION_RE.search(row_text):
@@ -865,8 +878,51 @@ def parse_xlsx(file_bytes):
             "bank's format needs a keyword added to COLUMN_KEYWORDS."
         )
     if not rows:
-        warnings.append("[xlsx] Header(s) found but no data rows extracted.")
-    return rows, warnings, {"sheets": len(wb.sheetnames), "sheets_used": sheets_used}
+        warnings.append("[%s] Header(s) found but no data rows extracted." % label)
+    return rows, warnings, {"sheets": len(sheets), "sheets_used": sheets_used}
+
+
+def parse_xlsx(file_bytes):
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    sheets = [(name, list(wb[name].iter_rows(values_only=True))) for name in wb.sheetnames]
+    return parse_sheets(sheets, "xlsx")
+
+
+def parse_xls(file_bytes):
+    """Legacy (pre-2007, binary BIFF) Excel - what several banks' "Export
+    To Excel" buttons still produce under a .xls name (verified on a real
+    BLC Bank export). openpyxl can't read these at all, so xlrd does the
+    reading and hands back the same row tuples parse_xlsx would; real
+    Excel date cells become datetimes, everything else passes through."""
+    try:
+        import xlrd
+    except ImportError:
+        raise ValueError(
+            "Reading old .xls files needs the 'xlrd' package - add "
+            "xlrd==2.0.1 to requirements.txt, or re-save the file as .xlsx."
+        )
+    wb = xlrd.open_workbook(file_contents=file_bytes)
+    sheets = []
+    for sh in wb.sheets():
+        grid = []
+        for r in range(sh.nrows):
+            row = []
+            for c in range(sh.ncols):
+                cell = sh.cell(r, c)
+                v = cell.value
+                if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                    v = None
+                elif cell.ctype == xlrd.XL_CELL_DATE:
+                    try:
+                        v = xlrd.xldate_as_datetime(v, wb.datemode)
+                    except Exception:  # noqa: BLE001
+                        pass
+                elif cell.ctype == xlrd.XL_CELL_TEXT and str(v).strip() == "":
+                    v = None
+                row.append(v)
+            grid.append(tuple(row))
+        sheets.append((sh.name, grid))
+    return parse_sheets(sheets, "xls")
 
 
 # ================================================================== CSV
@@ -939,10 +995,7 @@ def sniff_format(file_bytes, filename):
     if file_bytes.startswith(b"PK\x03\x04"):
         return "xlsx"
     if file_bytes.startswith(b"\xd0\xcf\x11\xe0"):
-        raise ValueError(
-            "This looks like a legacy .xls file (pre-2007 Excel format). "
-            "Please re-save it as .xlsx or .csv and upload again."
-        )
+        return "xls"
     ext = (filename or "").rsplit(".", 1)[-1].lower() if filename else ""
     if ext in ("csv", "tsv", "txt"):
         return "csv"
@@ -966,6 +1019,8 @@ def parse_bank_file(file_bytes, filename=None):
         rows, warnings, meta = parse_pdf(file_bytes)
     elif fmt == "xlsx":
         rows, warnings, meta = parse_xlsx(file_bytes)
+    elif fmt == "xls":
+        rows, warnings, meta = parse_xls(file_bytes)
     else:
         rows, warnings, meta = parse_csv(file_bytes)
     result = {"rows": rows, "warnings": warnings, "build_tag": BUILD_TAG, "format": fmt}
