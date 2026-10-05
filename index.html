@@ -225,13 +225,13 @@
   <div class="uploads">
     <div class="drop" id="dropOurs">
       <h2>Our file</h2>
-      <p class="hint">Fixed-template statement of account (doPDF). You can add more than one (e.g. separate monthly statements) — click or drop one or more PDFs.</p>
+      <p class="hint">Statement of account — PDF (doPDF template), Excel (.xls/.xlsx), or CSV. You can add more than one (e.g. separate monthly statements) — click or drop one or more files.</p>
       <div class="filename" id="oursFileList"></div>
-      <input type="file" id="fileOurs" accept="application/pdf" multiple>
+      <input type="file" id="fileOurs" accept="application/pdf,.pdf,.xlsx,.xls,.csv" multiple>
     </div>
     <div class="drop" id="dropBank">
       <h2>Bank statement</h2>
-      <p class="hint">The bank's own statement — PDF, Excel (.xlsx), or CSV, any layout. Click or drop a file.</p>
+      <p class="hint">The bank's own statement — PDF, Excel (.xls/.xlsx), or CSV, any layout. Click or drop a file.</p>
       <p class="filename" id="nameBank"></p>
       <input type="file" id="fileBank" accept="application/pdf,.pdf,.xlsx,.xls,.csv">
     </div>
@@ -253,8 +253,8 @@
   </div>
 
   <div class="actions">
-    <!-- BUILD_TAG (index.html): 2026-09-18-fix-same-day-asof-order -->
-    <button id="compareBtn" disabled data-build="2026-09-18-fix-same-day-asof-order">Compare</button>
+    <!-- BUILD_TAG (index.html): 2026-10-05-excel-inputs -->
+    <button id="compareBtn" disabled data-build="2026-10-05-excel-inputs">Compare</button>
     <button id="clearAllBtn" type="button" style="background:#fff; color:#666; border:1px solid #ccc;">Clear all</button>
     <span id="status"></span>
   </div>
@@ -914,7 +914,15 @@
         }
         setStatus('Extracting ' + oursB64List.length + ' of our file' + (oursB64List.length === 1 ? '' : 's') + ' and the bank statement…');
         return Promise.all([
-          Promise.all(oursB64List.map(function (b64) { return post('/api/extract-ours', { pdf_base64: b64 }); })),
+          Promise.all(oursB64List.map(function (b64, i) {
+            var f = files.ours[i];
+            var isPdf = (f.name.split('.').pop() || '').toLowerCase() === 'pdf';
+            // PDFs use the fixed-template (accsta04) parser; Excel/CSV have no fixed
+            // layout, so they go through the generic column-header parser instead.
+            return isPdf
+              ? post('/api/extract-ours', { pdf_base64: b64 })
+              : post('/api/extract-bank', { file_base64: b64, filename: f.name });
+          })),
           post('/api/extract-bank', { file_base64: bankB64, filename: files.bank.name })
         ]);
       })
@@ -1019,7 +1027,7 @@
     URL.revokeObjectURL(a.href);
   }
 
-  setupOursDrop('dropOurs', 'fileOurs', ['pdf']);
+  setupOursDrop('dropOurs', 'fileOurs', ['pdf', 'xlsx', 'xls', 'csv']);
   setupDrop('dropBank', 'fileBank', 'nameBank', 'bank', ['pdf', 'xlsx', 'xls', 'csv']);
 
   document.getElementById('clearAllBtn').addEventListener('click', function () {
